@@ -39,7 +39,8 @@ extern "C" {
 #define IK_KNEE_MIN_DEFAULT  10.0f   // 膝舵机下限默认值
 #define IK_KNEE_MAX_DEFAULT  170.0f  // 膝舵机上限默认值
 
-#define CENTER_OFFSET_DEFAULT  0.0f  // 脚中位偏移默认值 (mm)
+#define CENTER_OFFSET_DEFAULT   0.0f  // 中位点中点平移默认值 (mm)
+#define CENTER_SPACING_DEFAULT  0.0f  // 前/后腿中位点间距默认值 (mm)
 
 // 运行时参数默认值 (不进 NVS，掉电丢失)
 #define SPEED_DEFAULT   2.5f

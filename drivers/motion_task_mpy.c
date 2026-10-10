@@ -174,6 +174,25 @@ STATIC mp_obj_t mp_motion_set_center(mp_obj_t obj) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_motion_set_center_obj, mp_motion_set_center);
 
+// 中位点间距 (前腿 +s/2 / 后腿 -s/2, 正=展开)。返回 True=已采纳, False=被拒。
+// 与 set_center 同一套两道闸门 (量级 + 组合), 具体原因看 C 侧 ESP_LOGW。
+STATIC mp_obj_t mp_motion_set_center_spacing(mp_obj_t obj) {
+    float s = mp_obj_get_float(obj);
+    bool ok = motion_set_center_spacing(s);
+    if (!ok) {
+        motion_ensure_geometry_loaded();   // 保证下面报的"原值"是真实值
+        const motion_state_t *m = motion_get_state();
+        mp_printf(&mp_plat_print, "⚠ 中位点间距 %.1fmm 被拒, 保持原值 %.1fmm —— 要么超 "
+                  "±%.1fmm (2×前后髋半距), 要么跟当前 stride=%.0f height=%.0f lift=%.0f "
+                  "组合后足端够不着\n",
+                  s, m->center_spacing, 2.0f * m->body_half_l,
+                  m->stride, m->height, m->lift_height);
+    }
+    return mp_obj_new_bool(ok);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_motion_set_center_spacing_obj,
+                                 mp_motion_set_center_spacing);
+
 STATIC mp_obj_t mp_motion_set_body_dims(mp_obj_t bl_obj, mp_obj_t bw_obj) {
     float bl = mp_obj_get_float(bl_obj);
     float bw = mp_obj_get_float(bw_obj);
@@ -260,6 +279,18 @@ STATIC mp_obj_t mp_motion_get_geometry(void) {
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_motion_get_geometry_obj, mp_motion_get_geometry);
 
+// 读回中位点参数: 2 元组 (center_offset, center_spacing), 单位 mm
+STATIC mp_obj_t mp_motion_get_center(void) {
+    motion_ensure_geometry_loaded();   // 开机时运动任务可能还没创建, g_motion 尚未载入
+    const motion_state_t *m = motion_get_state();
+    mp_obj_t items[2] = {
+        mp_obj_new_float(m->center_offset),
+        mp_obj_new_float(m->center_spacing),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_motion_get_center_obj, mp_motion_get_center);
+
 // 读**本帧实际生效**的步态参数, 2 元组 (eff_stride, eff_duty) —— 只读, 纯上报。
 //
 // ★ 用途: 转弯归一化。`turn` 是个**几何系数**(左右步长比), 同样 turn=0.5 在 walk 下
@@ -293,8 +324,8 @@ STATIC mp_obj_t mp_motion_show_geometry(void) {
               m->body_half_l, m->body_half_w, m->body_half_l * 2, m->body_half_w * 2);
     mp_printf(&mp_plat_print, "Hip:     %.0f ~ %.0f deg\n", ik_hip_min, ik_hip_max);
     mp_printf(&mp_plat_print, "Knee:    %.0f ~ %.0f deg\n", ik_knee_min, ik_knee_max);
-    mp_printf(&mp_plat_print, "Offset:  %.0f mm   Lift: %.0f mm\n",
-              m->center_offset, m->lift_height);
+    mp_printf(&mp_plat_print, "Offset:  %.0f mm  Spacing: %.0f mm  Lift: %.0f mm\n",
+              m->center_offset, m->center_spacing, m->lift_height);
     mp_printf(&mp_plat_print, "Omega:   %.2f rad/s\n", m->omega_base);
     mp_printf(&mp_plat_print, "--- Servo Calibration (ref_deg) ---\n");
     for (int i = 0; i < 8; i++) {
@@ -320,12 +351,14 @@ STATIC const mp_rom_map_elem_t bpuppy_motion_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_turn),     MP_ROM_PTR(&mp_motion_set_turn_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_direction), MP_ROM_PTR(&mp_motion_set_direction_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_center),  MP_ROM_PTR(&mp_motion_set_center_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_center_spacing), MP_ROM_PTR(&mp_motion_set_center_spacing_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_body_dims), MP_ROM_PTR(&mp_motion_set_body_dims_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_joint_limits), MP_ROM_PTR(&mp_motion_set_joint_limits_obj) },
     { MP_ROM_QSTR(MP_QSTR_load_geometry), MP_ROM_PTR(&mp_motion_load_geometry_obj) },
     { MP_ROM_QSTR(MP_QSTR_show_geometry), MP_ROM_PTR(&mp_motion_show_geometry_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_params),    MP_ROM_PTR(&mp_motion_get_params_obj) },
     { MP_ROM_QSTR(MP_QSTR_get_geometry),  MP_ROM_PTR(&mp_motion_get_geometry_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_center),    MP_ROM_PTR(&mp_motion_get_center_obj) },
     // 本帧实际生效的 (eff_stride, eff_duty) —— 转弯归一化用, 见上面的长注释
     { MP_ROM_QSTR(MP_QSTR_get_effective), MP_ROM_PTR(&mp_motion_get_effective_obj) },
 };

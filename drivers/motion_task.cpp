@@ -207,6 +207,7 @@ __attribute__((weak)) motion_state_t g_motion = {
     .gait_gap       = 0.04f,
     .turn           = 0.0f,
     .center_offset  = CENTER_OFFSET_DEFAULT,
+    .center_spacing = CENTER_SPACING_DEFAULT,
     .body_half_l    = IK_BODY_HALF_L_DEFAULT,
     .body_half_w    = IK_BODY_HALF_W_DEFAULT,
     .emergency_stop = false,
@@ -228,6 +229,7 @@ static bool g_was_moving = false;
 static float g_ramp_height = HEIGHT_DEFAULT;
 static float g_ramp_lift   = LIFT_DEFAULT;
 static float g_ramp_center = CENTER_OFFSET_DEFAULT;
+static float g_ramp_spacing = CENTER_SPACING_DEFAULT;  // 中位点间距 (前腿 +s/2 / 后腿 -s/2)
 static float g_ramp_pitch  = 0.0f;
 static float g_ramp_roll   = 0.0f;
 
@@ -651,17 +653,19 @@ static void motion_task_main(void *pvParam)
          * speed 插值算出来的抬脚 (站高恒 70, 无所谓). */
         if (is_stand || g_motion.gait == GAIT_REPOS) {
             // 静止: 实参直接对齐目标 —— 站着改参数有 3°/帧 的限制器兜着, 不需要这层
-            g_ramp_height = eff_height;
-            g_ramp_lift   = eff_lift;
-            g_ramp_center = g_motion.center_offset;
-            g_ramp_pitch  = g_motion.body_pitch;
-            g_ramp_roll   = g_motion.body_roll;
+            g_ramp_height  = eff_height;
+            g_ramp_lift    = eff_lift;
+            g_ramp_center  = g_motion.center_offset;
+            g_ramp_spacing = g_motion.center_spacing;
+            g_ramp_pitch   = g_motion.body_pitch;
+            g_ramp_roll    = g_motion.body_roll;
         } else {
-            g_ramp_height = ramp_to(g_ramp_height, eff_height,             RAMP_HEIGHT_STEP);
-            g_ramp_lift   = ramp_to(g_ramp_lift,   eff_lift,               RAMP_LIFT_STEP);
-            g_ramp_center = ramp_to(g_ramp_center, g_motion.center_offset, RAMP_CENTER_STEP);
-            g_ramp_pitch  = ramp_to(g_ramp_pitch,  g_motion.body_pitch,    RAMP_ATTITUDE_STEP);
-            g_ramp_roll   = ramp_to(g_ramp_roll,   g_motion.body_roll,     RAMP_ATTITUDE_STEP);
+            g_ramp_height  = ramp_to(g_ramp_height,  eff_height,              RAMP_HEIGHT_STEP);
+            g_ramp_lift    = ramp_to(g_ramp_lift,    eff_lift,                RAMP_LIFT_STEP);
+            g_ramp_center  = ramp_to(g_ramp_center,  g_motion.center_offset,  RAMP_CENTER_STEP);
+            g_ramp_spacing = ramp_to(g_ramp_spacing, g_motion.center_spacing, RAMP_CENTER_STEP);
+            g_ramp_pitch   = ramp_to(g_ramp_pitch,   g_motion.body_pitch,     RAMP_ATTITUDE_STEP);
+            g_ramp_roll    = ramp_to(g_ramp_roll,    g_motion.body_roll,      RAMP_ATTITUDE_STEP);
         }
         eff_height = g_ramp_height;
         eff_lift   = g_ramp_lift;
@@ -1057,8 +1061,11 @@ static void motion_task_main(void *pvParam)
             g_prev_fx[leg] = foot_x;
             g_prev_fz[leg] = foot_z;
 
-            // 脚中位偏移
-            foot_x += g_ramp_center;
+            // 中位点偏移: 中点平移 (center_offset) + 前/后腿间距的一半 (±spacing/2)
+            //   —— 间距正 = 展开 (前腿往前 + 后腿往后), 负 = 收窄, 见 set_center_spacing 注释。
+            foot_x += g_ramp_center
+                    + ((leg_pair[leg] == IK_LEG_FRONT) ?  g_ramp_spacing * 0.5f
+                                                       : -g_ramp_spacing * 0.5f);
 
             /* 身体姿态补偿: roll/pitch → 四腿高度偏置
              *
@@ -1080,7 +1087,7 @@ static void motion_task_main(void *pvParam)
              * ★ 用 tan 而不是 sin: 平面方程 z = h + x·tan(p) 的法向恰好给出倾角 p
              *   (实测精确 10.00°); 换成 sin 得到的是 atan(sin p) = 9.85°, 反而偏了。
              *
-             * 注: 用加过 center_offset 的 foot_x —— 足端实际的位置就包含那个偏移。
+             * 注: 用加过中位偏移 (中点 + 间距) 的 foot_x —— 足端实际的位置就包含那些偏移。
              */
             float deg2rad = 0.0174533f;
             float z_roll = g_motion.body_half_w * tanf(g_ramp_roll * deg2rad);
@@ -1172,11 +1179,12 @@ void motion_task_start(void)
     // 实参限速层同步一次: Python 可能在任务启动**之前**就改过参数 (main.py 或用户的
     // REPL 指令), 那时没人推进限速层 ⇒ 实参还停在编译期初值. 不补这一次, 第一帧就会
     // 从初值往目标"挪", 白白多走一段.
-    g_ramp_height = g_motion.height;
-    g_ramp_lift   = g_motion.lift_height;
-    g_ramp_center = g_motion.center_offset;
-    g_ramp_pitch  = g_motion.body_pitch;
-    g_ramp_roll   = g_motion.body_roll;
+    g_ramp_height  = g_motion.height;
+    g_ramp_lift    = g_motion.lift_height;
+    g_ramp_center  = g_motion.center_offset;
+    g_ramp_spacing = g_motion.center_spacing;
+    g_ramp_pitch   = g_motion.body_pitch;
+    g_ramp_roll    = g_motion.body_roll;
     xTaskCreatePinnedToCore(motion_task_main, "motion", MOTION_STACK,
                             NULL, MOTION_PRIORITY, &g_task_handle, MOTION_CORE);
 }
@@ -1317,20 +1325,24 @@ static bool ik_pos_check(float x, float z, int side, int leg_pair,
     return bad;
 }
 
-// 足端轨迹采样校验 —— 把**参与轨迹的全部 6 个量**一起判, 返回 true = 有问题, 参数不应写入。
+// 足端轨迹采样校验 —— 把**参与轨迹的全部 7 个量**一起判, 返回 true = 有问题, 参数不应写入。
 //
-// ★ 收 6 个参数而不是自己读全局, 是为了让 set_body_pose / set_center 也能拿**新值**跑一遍。
-//   那两个量同样进轨迹 (center_offset 平移整条 x, roll/pitch 逐腿叠加 z), 但它们自己
+// ★ 收 7 个参数而不是自己读全局, 是为了让 set_body_pose / set_center / set_center_spacing
+//   也能拿**新值**跑一遍。
+//   那几个量同样进轨迹 (center_offset 平移整条 x; center_spacing 前腿 +s/2、后腿 -s/2;
+//   roll/pitch 逐腿叠加 z), 但它们自己
 //   以前只查量级, 于是能改成一个"单看合法、组合起来够不着"的值 (docs/error.md §2.2 #2):
 //   默认 stride=70 height=70 时脚已经伸到 78.3mm, 离可达上限 84 只剩 5.7mm ⇒ 重心实际
 //   最多只能挪 11.4mm, 而 ±20 那个闸门会放行 15 / 20。运行时 ik_solve_2dof 只把 d 钳到
 //   84 静默吞掉伸展, 表现为脚在地上蹭、狗歪着走, **绝不会报错**。
 static bool traj_combo_bad(float stride, float height, float lift,
-                           float center_offset, float roll, float pitch)
+                           float center_offset, float center_spacing,
+                           float roll, float pitch)
 {
     float L1 = g_motion.ik_L1;
     float L2 = g_motion.ik_L2;
     float x  = fabsf(stride) * 0.5f;
+    float half_spacing = center_spacing * 0.5f;   // 前腿 +half / 后腿 -half
     bool  bad = false;
 
     // 机械步幅上限
@@ -1370,10 +1382,13 @@ static bool traj_combo_bad(float stride, float height, float lift,
 
     for (int i = 0; i < 5; i++) {
         float ease = ease_pts[i];
-        float xv = -x + 2.0f * x * ease;
-        xv += center_offset;
+        float xv0 = -x + 2.0f * x * ease;
+        xv0 += center_offset;
         float zv = height - lift * sinf(ease * (float)M_PI);
         for (int k = 0; k < 4; k++) {
+            // 中位点间距: 跟运行时腿循环 (foot_x += ...) 同一套 —— 前腿 +s/2, 后腿 -s/2
+            float xv = xv0 + ((leg_pair[k] == IK_LEG_FRONT) ? half_spacing
+                                                            : -half_spacing);
             float leg_x = ((k == 0 || k == 2) ? g_motion.body_half_l
                                               : -g_motion.body_half_l) + xv;
             float zf = zv + ((leg_side[k] == IK_SIDE_LEFT) ? -z_roll : z_roll)
@@ -1384,8 +1399,10 @@ static bool traj_combo_bad(float stride, float height, float lift,
                 // ★ 报**全部 6 个**量: 够不着未必是 stride/height/lift 的错, 也可能是
                 //   center/pitch/roll 把足端推出去了。只报前三个就是"骂错参数"。
                 ESP_LOGW(TAG, "⚠ 足端 (x=%.0f z=%.0f 腿%d) 髋/膝超限, 参数未写入 "
-                         "(stride=%.0f height=%.0f lift=%.0f center=%.1f roll=%.1f pitch=%.1f)",
-                         xv, zf, k, stride, height, lift, center_offset, roll, pitch);
+                         "(stride=%.0f height=%.0f lift=%.0f center=%.1f spacing=%.1f "
+                         "roll=%.1f pitch=%.1f)",
+                         xv, zf, k, stride, height, lift, center_offset,
+                         center_spacing, roll, pitch);
                 bad = true;
             }
         }
@@ -1396,19 +1413,22 @@ static bool traj_combo_bad(float stride, float height, float lift,
     //   角度也可能合规, 于是脚被要求插到地面以下。机体姿态压得狠时会碰到。
     if (min_zf < 0.0f) {
         ESP_LOGW(TAG, "⚠ 足端入地 (抬腿过度): 最深 z=%.1fmm (腿%d, 叠加姿态补偿后) —— "
-                 "lift=%.0f 超过 height=%.0f, 或姿态压太狠 (roll=%.1f pitch=%.1f), 参数未写入",
-                 min_zf, min_leg, lift, height, roll, pitch);
+                 "lift=%.0f 超过 height=%.0f, 或姿态/间距压太狠 "
+                 "(center=%.1f spacing=%.1f roll=%.1f pitch=%.1f), 参数未写入",
+                 min_zf, min_leg, lift, height, center_offset, center_spacing,
+                 roll, pitch);
         bad = true;
     }
     return bad;
 }
 
-// set_params 专用: 它只改 stride/height/lift, 其余三个量取当前存储值。
-// 其余两个 setter 不走这里 —— 它们直接调 traj_combo_bad() 并传自己的新值。
+// set_params 专用: 它只改 stride/height/lift, 其余四个量取当前存储值。
+// 其余三个 setter 不走这里 —— 它们直接调 traj_combo_bad() 并传自己的新值。
 static bool motion_validate_params(float stride, float height, float lift)
 {
     return traj_combo_bad(stride, height, lift,
-                          g_motion.center_offset, g_motion.body_roll, g_motion.body_pitch);
+                          g_motion.center_offset, g_motion.center_spacing,
+                          g_motion.body_roll, g_motion.body_pitch);
 }
 
 bool motion_set_params(float stride, float lift, float height)
@@ -1509,6 +1529,16 @@ static bool geom_limits_valid(float hip_min, float hip_max,
 static bool geom_center_offset_valid(float off)
 {
     return fabsf(off) <= g_motion.ik_L1 * 0.5f;
+}
+
+// 中位点**间距**的量级闸门: |s| ≤ 2×前后髋半距 (宽松; 单腿等效偏移只有 s/2)。
+//   ★ 与 offset 的 ±L1/2 刻意不同 —— 间距的可用范围本来就大 (低站高配平点 s≈66,
+//     H=30 时到 ~82), 真闸门是后面的 traj_combo_bad 组合校验 (够不够得着)。
+//     本函数只防 NaN/荒谬值 + NVS 载入时的量级复查 (与 "co" 同策略)。
+// NaN 参与比较恒假 → false, 与 geom_center_offset_valid 同源。
+static bool geom_center_spacing_valid(float s)
+{
+    return fabsf(s) <= 2.0f * g_motion.body_half_l;
 }
 
 bool motion_cal_ik(float L1, float L2)
@@ -1658,14 +1688,25 @@ void motion_load_geometry(void)
                      v, g_motion.ik_L1 * 0.5f, g_motion.ik_L1, CENTER_OFFSET_DEFAULT);
         }
     }
+    if (nvs_get_i32(handle, "cs",   &val) == ESP_OK) {
+        float v = val / 100.0f;
+        if (geom_center_spacing_valid(v)) {
+            g_motion.center_spacing = v;
+        } else {
+            g_motion.center_spacing = CENTER_SPACING_DEFAULT;
+            ESP_LOGW(TAG, "NVS 里 spacing=%.1f 非法 (上限 ±%.1f = 2×前后髋半距) -> 回退默认 %.0f",
+                     v, 2.0f * g_motion.body_half_l, CENTER_SPACING_DEFAULT);
+        }
+    }
     nvs_close(handle);
 
     ESP_LOGI(TAG, "Geometry loaded from NVS: "
-             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] offset=%.0f",
+             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] "
+             "offset=%.0f spacing=%.0f",
              g_motion.ik_L1, g_motion.ik_L2,
              g_motion.body_half_l, g_motion.body_half_w,
              ik_hip_min, ik_hip_max, ik_knee_min, ik_knee_max,
-             g_motion.center_offset);
+             g_motion.center_offset, g_motion.center_spacing);
 }
 
 void motion_save_geometry(void)
@@ -1685,15 +1726,17 @@ void motion_save_geometry(void)
     nvs_set_i32(handle, "kmin", (int32_t)(ik_knee_min * 100.0f));
     nvs_set_i32(handle, "kmax", (int32_t)(ik_knee_max * 100.0f));
     nvs_set_i32(handle, "co",   (int32_t)(g_motion.center_offset * 100.0f));
+    nvs_set_i32(handle, "cs",   (int32_t)(g_motion.center_spacing * 100.0f));
     nvs_commit(handle);
     nvs_close(handle);
 
     ESP_LOGI(TAG, "Geometry saved to NVS: "
-             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] offset=%.0f",
+             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] "
+             "offset=%.0f spacing=%.0f",
              g_motion.ik_L1, g_motion.ik_L2,
              g_motion.body_half_l, g_motion.body_half_w,
              ik_hip_min, ik_hip_max, ik_knee_min, ik_knee_max,
-             g_motion.center_offset);
+             g_motion.center_offset, g_motion.center_spacing);
 }
 
 void motion_ensure_geometry_loaded(void)
@@ -1733,12 +1776,12 @@ void motion_set_omega(float omega)
 bool motion_set_body_pose(float pitch, float roll)
 {
     if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
-                       g_motion.center_offset, roll, pitch)) {
+                       g_motion.center_offset, g_motion.center_spacing, roll, pitch)) {
         ESP_LOGW(TAG, "→ 姿态被拒, 保持原值: pitch=%.1f roll=%.1f "
-                 "(当前 stride=%.0f height=%.0f lift=%.0f center=%.1f)",
+                 "(当前 stride=%.0f height=%.0f lift=%.0f center=%.1f spacing=%.1f)",
                  g_motion.body_pitch, g_motion.body_roll,
                  g_motion.stride, g_motion.height, g_motion.lift_height,
-                 g_motion.center_offset);
+                 g_motion.center_offset, g_motion.center_spacing);
         return false;
     }
     g_motion.body_pitch = pitch;
@@ -1804,17 +1847,56 @@ bool motion_set_center(float offset)
     //   5.7mm, 重心实际最多只能挪 11.4mm, 而 ±20 那道闸门会放行 15 / 20。够不着时
     //   ik_solve_2dof 只把 d 钳到 84 静默吞掉伸展, 表现为脚在地上蹭、狗歪着走。
     if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
-                       offset, g_motion.body_roll, g_motion.body_pitch)) {
+                       offset, g_motion.center_spacing,
+                       g_motion.body_roll, g_motion.body_pitch)) {
         ESP_LOGW(TAG, "→ 重心被拒, 保持原值: offset=%.1fmm 单看没超 ±%.1fmm, 但跟当前 "
-                 "stride=%.0f height=%.0f lift=%.0f 组合后足端够不着 "
+                 "stride=%.0f height=%.0f lift=%.0f spacing=%.1f 组合后足端够不着 "
                  "(想让重心挪更多, 先减小 stride 或降低站高)",
                  offset, g_motion.ik_L1 * 0.5f,
-                 g_motion.stride, g_motion.height, g_motion.lift_height);
+                 g_motion.stride, g_motion.height, g_motion.lift_height,
+                 g_motion.center_spacing);
         return false;
     }
     g_motion.center_offset = offset;
     motion_save_geometry();
     ESP_LOGI(TAG, "Center offset: %.0f mm (saved)", offset);
+    return true;
+}
+
+/* 中位点间距 (前/后腿对称): 前腿 +s/2、后腿 -s/2; 正=展开, 负=收窄。
+ *
+ * 背景 (2026-10-11): 低站高/大摆幅时前腿髋在**向后端点**、后腿髋在**向前端点**最先
+ * 顶限位 (H=45/S=70 时前髋 179.6°, 余量 0.4°), 同髋向前行程整段闲置 (只用到 103.9°)。
+ * 根因是几何: 髋角 = α ± β, 蹲姿下膝部张角 β≈52° 把范围整体抬高。
+ * 把这对中位点对称拉开后, 髋的负担转移给膝(伸展侧): 前移时髋向后余量升、膝向前余量降,
+ * 配平点 (两者相等) = 最大最小余量最优。
+ *   例: S=70/H=45 间距 66 (前+33/后-33) → 余量 0.4° → 23.6°; 允许的最低站高 44.7 → ~30。
+ *
+ * ⚠ 代价: 向前端点吃可达圆盘预算 ⇒ 最大步长 S_max = 2·(√(84²−H²) − s/2)。
+ * ⚠ 最优方向不固定: 长步长 (如 S=106/H=50) 下最优反而**收窄** (≈ -24), 需按 (S,H) 现算。
+ */
+bool motion_set_center_spacing(float spacing)
+{
+    if (!geom_center_spacing_valid(spacing)) {
+        ESP_LOGW(TAG, "Center spacing rejected: %.1fmm 超出 ±%.1fmm (2×前后髋半距), "
+                 "保持原值 %.1fmm", spacing, 2.0f * g_motion.body_half_l,
+                 g_motion.center_spacing);
+        return false;
+    }
+    if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
+                       g_motion.center_offset, spacing,
+                       g_motion.body_roll, g_motion.body_pitch)) {
+        ESP_LOGW(TAG, "→ 中位点间距被拒, 保持原值: spacing=%.1fmm 单看没超 ±%.1fmm, 但跟"
+                 "当前 stride=%.0f height=%.0f lift=%.0f center=%.1f 组合后足端够不着 "
+                 "(向前端点先到可达上限, 想放更开先减小 stride 或降低站高)",
+                 spacing, 2.0f * g_motion.body_half_l,
+                 g_motion.stride, g_motion.height, g_motion.lift_height,
+                 g_motion.center_offset);
+        return false;
+    }
+    g_motion.center_spacing = spacing;
+    motion_save_geometry();
+    ESP_LOGI(TAG, "Center spacing: %.0f mm (saved)", spacing);
     return true;
 }
 

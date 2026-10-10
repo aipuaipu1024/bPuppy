@@ -54,7 +54,8 @@ typedef struct {
     float       gait_duty;      // 摆动相占比 (walk:0.20, trot:0.40)
     float       gait_gap;       // 同侧间隙 (walk:0.04, trot:0.10)
     float       turn;           // 转弯系数 -1(左) ~ +1(右)
-    float       center_offset;  // 脚中位偏移 (正=前移, 负=后移)
+    float       center_offset;  // 中位点**中点**前后平移 (正=前移, 负=后移)
+    float       center_spacing; // 前/后腿中位点**间距**: 前腿 +s/2, 后腿 -s/2 (正=放宽, 负=收窄)
     float       body_half_l;    // 前后髋半距 (mm), 默认 62.5
     float       body_half_w;    // 左右髋半宽 (mm), 默认 59.0
     bool        emergency_stop; // 急停标志
@@ -140,12 +141,20 @@ bool motion_set_turn(float turn);
 // 返回是否原样采纳 (false=0 或 NaN 被拒, 保持原值)
 bool motion_set_direction(float dir);
 
-// 设置脚中位偏移 (正=前移, 负=后移)
+// 设置中位点**中点**前后平移 (正=前移, 负=后移) —— 前后腿一起挪。
 // 返回是否写入成功 (false=被拒, 保持原值且不写 NVS)。被拒有两种原因:
 //   (1) 量级超 ±大腿长/2 = ±20mm;
 //   (2) 量级没超, 但跟当前 stride/height/lift 组合后足端够不着
 //       (默认 stride=70 height=70 时实际上限只有 11.4mm, 见 docs/error.md §2.2 #2)
 bool motion_set_center(float offset);
+
+// 设置前/后腿中位点的**间距** (正 = 展开: 前腿 +s/2、后腿 -s/2; 负 = 收窄; 单位 mm)。
+// 用途: 低站高/大摆幅时前腿髋(向后端点)/后腿髋(向前端点)最先顶限位, 展开间距把髋的
+// 负担转移给膝(伸展侧)配平两侧余量; 代价是向前端点吃可达预算 ⇒ 最大步长缩短。
+// 返回是否写入成功 (false=被拒, 保持原值且不写 NVS)。被拒有两种原因:
+//   (1) 量级超 ±2×前后髋半距 (默认 ±125mm);
+//   (2) 量级没超, 但跟当前 stride/height/lift/中点组合后足端够不着(组合校验)。
+bool motion_set_center_spacing(float spacing);
 
 // 检查运动任务是否正在运行（enabled 且未急停）
 bool motion_is_running(void);
