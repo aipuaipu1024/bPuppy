@@ -116,8 +116,22 @@ static const int leg_side[]    = {IK_SIDE_LEFT, IK_SIDE_LEFT,
 static const int leg_pair[]    = {IK_LEG_FRONT, IK_LEG_REAR,
                                    IK_LEG_FRONT, IK_LEG_REAR};
 
-/* ---- 舵机角度限速 (每帧最大变化) ---- */
-#define SERVO_MAX_DEG_PER_FRAME  3.0f   // 每 20ms 最多移动度数
+/* ---- 舵机角度限速 (每帧最大变化) ----
+ *
+ * ⚠ **两个常量必须分开, 不能互相套用**:
+ *   3°/帧 = 150 °/s —— 姿态过渡够用, 而且不伤舵机。
+ *   但套到步态循环上会把摆动相砍死: 摆动相要转 152° (knee 133→57→133),
+ *   3°/帧 在一个 0.25s 的摆动相里只够转 37.5° ⇒ 步态直接瘫。
+ *
+ * 步态循环此前**一道限幅都没有** —— 离线逐帧复刻算出 walk (speed2.5/stride70/lift30)
+ * 的摆动相峰值是 髋 806 / 膝 900 °/s, 而 MG90S 在 7.4V 直供下空载也只有约 900 °/s
+ * (空载 ⇒ 力矩为零)。即摆动相全程贴着物理极限, 舵机自己饱和 ⇒ 实际轨迹不可知。
+ * 加上下面这道限幅后, 只要它**【一帧都不触发】**, 指令 = 实际, 落地打滑那类分析才成立。
+ */
+#define SERVO_MAX_DEG_PER_FRAME  3.0f   // 姿态过渡 (站姿 / 起步阶段A / 回正步): 150 °/s
+#define GAIT_MAX_DEG_PER_FRAME  14.0f   // 步态循环 (walk/trot/go): 700 °/s
+static int   g_gait_clamp_hits = 0;   // 步态限幅每秒触发帧数 (纯统计, 不改行为)
+static int   g_clamp_log_div   = 0;   // 日志分频 (50 帧 = 1 秒)
 static float g_smooth_angles[8] = {90, 90, 90, 90, 90, 90, 90, 90};
 static int   g_dir_last = 1;          // 上次运动方向 (+1 前进 / -1 后退), 用于检换向
 static float g_stride_smooth = 0.0f;  // GO 平滑步长 (起步从 0 爬升)
@@ -1088,15 +1102,34 @@ static void motion_task_main(void *pvParam)
             //   不需要知道狗在哪、摆成什么样, 只需要知道当前角.
             // 回正步也套限速器: 时间曲线已经限了速率, 这是第二道保险
             // (防止 REPOS_STEP_TIME 被设得过小 ⇒ 舵机被要求跳)
-            if (is_stand || g_stand_up || g_motion.gait == GAIT_REPOS) {
+            // ★ 步态循环也套限速器 (2026-10-10 加): 慢速姿态过渡用 3°/帧,
+            //   步态循环用 GAIT_MAX_DEG_PER_FRAME —— **两个常量**, 见文件上方说明.
+            //   支撑相只要 1~100 °/s (0.02~2°/帧), 永远碰不到步态那道限制,
+            //   所以"该保护的自动保护住了": 只有摆动相的峰值会被削.
+            {
+                float step = (is_stand || g_stand_up || g_motion.gait == GAIT_REPOS)
+                             ? SERVO_MAX_DEG_PER_FRAME
+                             : GAIT_MAX_DEG_PER_FRAME;
                 float hip_raw  = ik.hip_deg;
                 float knee_raw = ik.knee_deg;
-                ik.hip_deg  = servo_step_toward(leg_hip_ch[leg],  hip_raw,  SERVO_MAX_DEG_PER_FRAME);
-                ik.knee_deg = servo_step_toward(leg_knee_ch[leg], knee_raw, SERVO_MAX_DEG_PER_FRAME);
+                // ⚠ 触发判据必须在【调用前】比 —— servo_step_toward 是拿
+                //   g_smooth_angles[] (上一帧的输出) 当"当前位置"的, 不是拿 raw。
+                //   触发时 clamped = cur ± step, 于是 |clamped - raw| 反而 **小于** step,
+                //   拿它当判据永远判不出来 (2026-10-10 踩过: 实测明明在削, 计数恒为 0)。
+                float cur_hip  = g_smooth_angles[leg_hip_ch[leg]];
+                float cur_knee = g_smooth_angles[leg_knee_ch[leg]];
+                ik.hip_deg  = servo_step_toward(leg_hip_ch[leg],  hip_raw,  step);
+                ik.knee_deg = servo_step_toward(leg_knee_ch[leg], knee_raw, step);
                 if (g_stand_up &&
                     (fabsf(ik.hip_deg  - hip_raw)  > STAND_UP_TOL ||
                      fabsf(ik.knee_deg - knee_raw) > STAND_UP_TOL)) {
                     stand_up_converged = false;
+                }
+                // 纯统计: 本帧步态限幅有没有削到 (这一行是"参数在不在能力之内"的尺子)
+                if (step == GAIT_MAX_DEG_PER_FRAME &&
+                    (fabsf(hip_raw  - cur_hip)  > step + 1e-3f ||
+                     fabsf(knee_raw - cur_knee) > step + 1e-3f)) {
+                    g_gait_clamp_hits++;
                 }
             }
             g_smooth_angles[leg_hip_ch[leg]]  = ik.hip_deg;
@@ -1114,6 +1147,17 @@ static void motion_task_main(void *pvParam)
         }
 
         servo_group_commit();
+
+        // 步态限幅触发率 (每秒一行) —— 本次实验的主要读数:
+        //   0  ⇒ 指令落在舵机能力之内, 指令 = 实际, 落地打滑那类分析才成立
+        //   >0 ⇒ 峰值超了, 按 抬脚↓ / 步长↓ / speed↓ 往下调
+        if (++g_clamp_log_div >= 50) {
+            g_clamp_log_div = 0;
+            ESP_LOGI(TAG, "gait clamp hits/s = %d  (limit=%.1f deg/frame = %.0f deg/s)",
+                     g_gait_clamp_hits, GAIT_MAX_DEG_PER_FRAME,
+                     GAIT_MAX_DEG_PER_FRAME / MOTION_LOOP_MS * 1000.0f);
+            g_gait_clamp_hits = 0;
+        }
 
         vTaskDelayUntil(&last_wake, period);
     }
