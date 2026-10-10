@@ -27,7 +27,7 @@ bPuppy 是基于 ESP32-S3 的 8 自由度四足机器狗（4腿 × 2DOF：髋+�
 | 速度范围 | 0~10 | `set_speed()` |
 | 抬腿默认 | 30mm | `set_params()` 第 2 参 |
 | 中位点中点平移 | 0mm | `set_center()` → NVS |
-| 中位点间距 | 0mm | `set_center_spacing()` → NVS（前 +s/2 / 后 −s/2，正=展开；低站高靠它配平髋/膝余量）|
+| 中位点间距 | 0mm | `set_center_spacing()`（**运行时，不落盘**；前 +s/2 / 后 −s/2，正=展开；只在 walk/trot 生效，GO 不叠加）|
 | Walk 最优 | speed=2.5, stride=70, height=70 | 实测 |
 | Trot 最优 | speed=8.5, stride=70, height=60 | 实测 |
 

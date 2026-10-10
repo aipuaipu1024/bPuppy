@@ -130,8 +130,6 @@ static const int leg_pair[]    = {IK_LEG_FRONT, IK_LEG_REAR,
  */
 #define SERVO_MAX_DEG_PER_FRAME  3.0f   // 姿态过渡 (站姿 / 起步阶段A / 回正步): 150 °/s
 #define GAIT_MAX_DEG_PER_FRAME  14.0f   // 步态循环 (walk/trot/go): 700 °/s
-static int   g_gait_clamp_hits = 0;   // 步态限幅每秒触发帧数 (纯统计, 不改行为)
-static int   g_clamp_log_div   = 0;   // 日志分频 (50 帧 = 1 秒)
 static float g_smooth_angles[8] = {90, 90, 90, 90, 90, 90, 90, 90};
 static int   g_dir_last = 1;          // 上次运动方向 (+1 前进 / -1 后退), 用于检换向
 static float g_stride_smooth = 0.0f;  // GO 平滑步长 (起步从 0 爬升)
@@ -650,20 +648,27 @@ static void motion_task_main(void *pvParam)
 
         /* ---- 运动实参的跟随限速 (说明见文件上方 RAMP_*_STEP) ----
          * 放在 GO 分支**之后**: 对 walk/trot 限的是用户改的那几个值, 对 GO 限的是
-         * speed 插值算出来的抬脚 (站高恒 70, 无所谓). */
+         * speed 插值算出来的抬脚 (站高恒 70, 无所谓).
+         *
+         * ★ 间距只在 walk/trot (含静止/回正, 那两态保持现状) 生效 —— **GO 不叠加**:
+         *   GO 的几何是固定表 (70/70/30), 而间距是按用户参数配平的, 两者组合可能超出
+         *   可达 ⇒ 静默缩短 (前伸/后伸端点 d>84)。切换步态时走同一条限速层 (1.5mm/帧)
+         *   平滑淡出/淡入。中途偏移 (center_offset) 不受此限 —— 它三种步态通用。 */
+        float eff_center_spacing = (g_motion.gait == GAIT_GO) ? 0.0f
+                                                              : g_motion.center_spacing;
         if (is_stand || g_motion.gait == GAIT_REPOS) {
             // 静止: 实参直接对齐目标 —— 站着改参数有 3°/帧 的限制器兜着, 不需要这层
             g_ramp_height  = eff_height;
             g_ramp_lift    = eff_lift;
             g_ramp_center  = g_motion.center_offset;
-            g_ramp_spacing = g_motion.center_spacing;
+            g_ramp_spacing = eff_center_spacing;
             g_ramp_pitch   = g_motion.body_pitch;
             g_ramp_roll    = g_motion.body_roll;
         } else {
             g_ramp_height  = ramp_to(g_ramp_height,  eff_height,              RAMP_HEIGHT_STEP);
             g_ramp_lift    = ramp_to(g_ramp_lift,    eff_lift,                RAMP_LIFT_STEP);
             g_ramp_center  = ramp_to(g_ramp_center,  g_motion.center_offset,  RAMP_CENTER_STEP);
-            g_ramp_spacing = ramp_to(g_ramp_spacing, g_motion.center_spacing, RAMP_CENTER_STEP);
+            g_ramp_spacing = ramp_to(g_ramp_spacing, eff_center_spacing,      RAMP_CENTER_STEP);
             g_ramp_pitch   = ramp_to(g_ramp_pitch,   g_motion.body_pitch,     RAMP_ATTITUDE_STEP);
             g_ramp_roll    = ramp_to(g_ramp_roll,    g_motion.body_roll,      RAMP_ATTITUDE_STEP);
         }
@@ -1119,24 +1124,12 @@ static void motion_task_main(void *pvParam)
                              : GAIT_MAX_DEG_PER_FRAME;
                 float hip_raw  = ik.hip_deg;
                 float knee_raw = ik.knee_deg;
-                // ⚠ 触发判据必须在【调用前】比 —— servo_step_toward 是拿
-                //   g_smooth_angles[] (上一帧的输出) 当"当前位置"的, 不是拿 raw。
-                //   触发时 clamped = cur ± step, 于是 |clamped - raw| 反而 **小于** step,
-                //   拿它当判据永远判不出来 (2026-10-10 踩过: 实测明明在削, 计数恒为 0)。
-                float cur_hip  = g_smooth_angles[leg_hip_ch[leg]];
-                float cur_knee = g_smooth_angles[leg_knee_ch[leg]];
                 ik.hip_deg  = servo_step_toward(leg_hip_ch[leg],  hip_raw,  step);
                 ik.knee_deg = servo_step_toward(leg_knee_ch[leg], knee_raw, step);
                 if (g_stand_up &&
                     (fabsf(ik.hip_deg  - hip_raw)  > STAND_UP_TOL ||
                      fabsf(ik.knee_deg - knee_raw) > STAND_UP_TOL)) {
                     stand_up_converged = false;
-                }
-                // 纯统计: 本帧步态限幅有没有削到 (这一行是"参数在不在能力之内"的尺子)
-                if (step == GAIT_MAX_DEG_PER_FRAME &&
-                    (fabsf(hip_raw  - cur_hip)  > step + 1e-3f ||
-                     fabsf(knee_raw - cur_knee) > step + 1e-3f)) {
-                    g_gait_clamp_hits++;
                 }
             }
             g_smooth_angles[leg_hip_ch[leg]]  = ik.hip_deg;
@@ -1154,17 +1147,6 @@ static void motion_task_main(void *pvParam)
         }
 
         servo_group_commit();
-
-        // 步态限幅触发率 (每秒一行) —— 本次实验的主要读数:
-        //   0  ⇒ 指令落在舵机能力之内, 指令 = 实际, 落地打滑那类分析才成立
-        //   >0 ⇒ 峰值超了, 按 抬脚↓ / 步长↓ / speed↓ 往下调
-        if (++g_clamp_log_div >= 50) {
-            g_clamp_log_div = 0;
-            ESP_LOGI(TAG, "gait clamp hits/s = %d  (limit=%.1f deg/frame = %.0f deg/s)",
-                     g_gait_clamp_hits, GAIT_MAX_DEG_PER_FRAME,
-                     GAIT_MAX_DEG_PER_FRAME / MOTION_LOOP_MS * 1000.0f);
-            g_gait_clamp_hits = 0;
-        }
 
         vTaskDelayUntil(&last_wake, period);
     }
@@ -1688,25 +1670,14 @@ void motion_load_geometry(void)
                      v, g_motion.ik_L1 * 0.5f, g_motion.ik_L1, CENTER_OFFSET_DEFAULT);
         }
     }
-    if (nvs_get_i32(handle, "cs",   &val) == ESP_OK) {
-        float v = val / 100.0f;
-        if (geom_center_spacing_valid(v)) {
-            g_motion.center_spacing = v;
-        } else {
-            g_motion.center_spacing = CENTER_SPACING_DEFAULT;
-            ESP_LOGW(TAG, "NVS 里 spacing=%.1f 非法 (上限 ±%.1f = 2×前后髋半距) -> 回退默认 %.0f",
-                     v, 2.0f * g_motion.body_half_l, CENTER_SPACING_DEFAULT);
-        }
-    }
     nvs_close(handle);
 
     ESP_LOGI(TAG, "Geometry loaded from NVS: "
-             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] "
-             "offset=%.0f spacing=%.0f",
+             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] offset=%.0f",
              g_motion.ik_L1, g_motion.ik_L2,
              g_motion.body_half_l, g_motion.body_half_w,
              ik_hip_min, ik_hip_max, ik_knee_min, ik_knee_max,
-             g_motion.center_offset, g_motion.center_spacing);
+             g_motion.center_offset);
 }
 
 void motion_save_geometry(void)
@@ -1726,17 +1697,15 @@ void motion_save_geometry(void)
     nvs_set_i32(handle, "kmin", (int32_t)(ik_knee_min * 100.0f));
     nvs_set_i32(handle, "kmax", (int32_t)(ik_knee_max * 100.0f));
     nvs_set_i32(handle, "co",   (int32_t)(g_motion.center_offset * 100.0f));
-    nvs_set_i32(handle, "cs",   (int32_t)(g_motion.center_spacing * 100.0f));
     nvs_commit(handle);
     nvs_close(handle);
 
     ESP_LOGI(TAG, "Geometry saved to NVS: "
-             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] "
-             "offset=%.0f spacing=%.0f",
+             "L1=%.1f L2=%.1f BL=%.1f BW=%.1f hip[%.0f~%.0f] knee[%.0f~%.0f] offset=%.0f",
              g_motion.ik_L1, g_motion.ik_L2,
              g_motion.body_half_l, g_motion.body_half_w,
              ik_hip_min, ik_hip_max, ik_knee_min, ik_knee_max,
-             g_motion.center_offset, g_motion.center_spacing);
+             g_motion.center_offset);
 }
 
 void motion_ensure_geometry_loaded(void)
@@ -1874,6 +1843,11 @@ bool motion_set_center(float offset)
  *
  * ⚠ 代价: 向前端点吃可达圆盘预算 ⇒ 最大步长 S_max = 2·(√(84²−H²) − s/2)。
  * ⚠ 最优方向不固定: 长步长 (如 S=106/H=50) 下最优反而**收窄** (≈ -24), 需按 (S,H) 现算。
+ *
+ * ★ 运行时参数, **不落盘** —— 与 stride/height/lift 同类: 它只对"当时那套参数"有意义,
+ *   掉电后参数回默认值, 存量间距反而会配出超可达组合 ⇒ 一起归零最安全。
+ * ★ 只在 walk/trot 生效 —— **GO 不叠加** (GO 用固定几何 70/70/30, 组合校验算不到它;
+ *   见限速层的 eff_center_spacing); 切换步态时按 1.5mm/帧 平滑淡出/淡入。
  */
 bool motion_set_center_spacing(float spacing)
 {
@@ -1895,8 +1869,7 @@ bool motion_set_center_spacing(float spacing)
         return false;
     }
     g_motion.center_spacing = spacing;
-    motion_save_geometry();
-    ESP_LOGI(TAG, "Center spacing: %.0f mm (saved)", spacing);
+    ESP_LOGI(TAG, "Center spacing: %.0f mm (runtime only, not saved)", spacing);
     return true;
 }
 
