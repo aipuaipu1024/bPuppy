@@ -89,6 +89,32 @@ static const char *TAG = "motion";
 #define RAMP_CENTER_STEP   1.5f    // mm/帧  20mm → 14 帧 (0.28s)
 #define RAMP_ATTITUDE_STEP 0.7f    // deg/帧 10°  → 15 帧 (0.3s)
 
+/* ---- 相位联动摆动 (body sway) ----
+ * 为什么需要: walk 抬起任意一条腿时, 支撑三足的斜边几乎从机身中心穿过 ——
+ * 四脚站在髋正下方 ⇒ 站姿是矩形 ⇒ 那条对角线过中心。逐相位核算
+ * (gait_sim/sway_solver.py, 口径与 ik.c 同源):
+ *   t=0.00 (LH 抬) / t=0.44 (LF 落) / t=0.50 (RH 抬) / t=0.94 (RF 落)
+ *   —— 重心到支撑边界只有 **1.98mm** (默认 S70/H70/L30, 重心在正中时)。
+ *   两个"落地"瞬间最容易被忽略 (只查抬脚瞬间会漏掉)。
+ * 做法: 给整幅足端图案叠加一个前后平移:
+ *     sway_x(t) = -A · dir · cos(4π(t - δ)),   t = g_phase/2π (0 = LH 抬脚, 正向)
+ *   ★ 足端只能前后动 —— 本机构 ik 只有 (x,z), 足端 y 恒为 ±body_half_w
+ *     (见下面 roll 补偿的注释), 左右方向没有可用自由度。
+ *   符号: 足端图案 +Δ ⇒ 机身/重心相对支撑 -Δ ⇒ 重心沿 +A·cos 方向挪。
+ *   A>0 时后腿抬的瞬间重心前移、前腿落的瞬间重心后移, 正对上面四个临界点。
+ *   δ=0.095 由求解器给出: 让 t=0 与 t=0.44 两个瞬时各得 ±0.368A 的裕量 (相等)。
+ *   逆走: 足端图案是正向的镜像 ⇒ 摆动随 direction 取反。
+ * 幅值: 越大越稳, 但吃可达预算 (足端前伸/后伸端点) —— 真正拦人的是组合校验:
+ *   S70/H70/L30 下 A≤22 能过 (min stab 1.98→8.1mm @A=22, 关节裕量 12→12°);
+ *   A=12 (默认) 时 min stab 1.98→5.3mm 且关节裕量 12→22° (反而更宽松)。
+ *   低站高 + 大间距 (如 H45/sp66) 时可达余量只剩 2.5mm, A 只能到 ~6。
+ * 生效范围: 只在 walk 族 (walkness = (0.5-duty-gap)/0.26): walk=1, trot/GO 高速段=0,
+ *   GO 4~6 段线性跟随; 再乘步长淡入淡出系数 ⇒ 起步/停车/回正自动收放。 */
+#define SWAY_DELTA          0.095f // 相位提前量 (周期): 两个临界瞬时增益相等 (求解器)
+#define RAMP_SWAY_STEP      0.5f   // mm/帧 (满幅 12mm → 24 帧 ≈ 0.5s)
+#define SWAY_DIR_STEP       0.10f  // 换向时方向符号斜坡 /帧 (≈0.2s, 过零无跳变)
+/* SWAY_DEFAULT / SWAY_MAX_AMP 在 motion_task.h (mpy 绑定也要用) */
+
 /* ---- 回正步 (停步收尾) ----
  * 停步不走淡出了: 收停信号后**保持当前步态**走到下一个"四腿全踩地"窗口, 在那里把步长
  * 硬切到 0, 然后进 GAIT_REPOS —— 身体不再移动, 由**对角两两抬脚**把四腿挪回 x=0.
@@ -206,6 +232,7 @@ __attribute__((weak)) motion_state_t g_motion = {
     .turn           = 0.0f,
     .center_offset  = CENTER_OFFSET_DEFAULT,
     .center_spacing = CENTER_SPACING_DEFAULT,
+    .sway_amp       = SWAY_DEFAULT,
     .body_half_l    = IK_BODY_HALF_L_DEFAULT,
     .body_half_w    = IK_BODY_HALF_W_DEFAULT,
     .emergency_stop = false,
@@ -228,6 +255,8 @@ static float g_ramp_height = HEIGHT_DEFAULT;
 static float g_ramp_lift   = LIFT_DEFAULT;
 static float g_ramp_center = CENTER_OFFSET_DEFAULT;
 static float g_ramp_spacing = CENTER_SPACING_DEFAULT;  // 中位点间距 (前腿 +s/2 / 后腿 -s/2)
+static float g_ramp_sway   = 0.0f;   // 摆动幅值实参 (mm, 永远斜坡, 从 0 淡入 —— 见 SWAY_*)
+static float g_sway_dir    = 1.0f;   // 摆动方向符号实参 (±1, 换向时斜坡过渡)
 static float g_ramp_pitch  = 0.0f;
 static float g_ramp_roll   = 0.0f;
 
@@ -675,6 +704,26 @@ static void motion_task_main(void *pvParam)
         eff_height = g_ramp_height;
         eff_lift   = g_ramp_lift;
 
+        /* ---- 相位联动摆动: 目标幅值 (见文件上方 SWAY_* 注释) ----
+         * walkness: walk(duty+gap=0.24)=1 → trot(0.50)=0, GO 4~6 段线性跟随;
+         * × g_stride_fade: 起步淡入 / 滑块归零淡出 / 回正 (系数收 0) 都自动收放。
+         * ★ 永远走限速层, **不参与**上面 is_stand/REPOS 的"静止直接对齐" ——
+         *   步态切换 (walk→trot) 目标会瞬变 12→0, 直接对齐就是 12mm 的足端跳变。 */
+        float walkness = (0.50f - (eff_duty + eff_gap)) / (0.50f - 0.24f);
+        if (!(walkness > 0.0f)) walkness = 0.0f;   // ★ 含 NaN 护栏 (!(a>0) 对 NaN 为真)
+        if (walkness > 1.0f)    walkness = 1.0f;
+        float eff_sway = 0.0f;
+        if (!(is_stand || g_motion.gait == GAIT_REPOS)) {
+            eff_sway = walkness * g_motion.sway_amp * g_stride_fade;
+        }
+        g_ramp_sway = ramp_to(g_ramp_sway, eff_sway, RAMP_SWAY_STEP);
+
+        /* 摆动方向符号: 与 stride_sign 同源 (换向等待期保持旧方向), 用斜坡过渡 ——
+         * 当帧翻转会在相位非零处造成 2|sway| 的足端跳变 (翻转点不保证落在余弦零点)。 */
+        float sway_dir_t = g_pending_flip ? (float)g_flip_sign : g_motion.direction;
+        g_sway_dir = ramp_to(g_sway_dir, (sway_dir_t < 0.0f) ? -1.0f : 1.0f,
+                             SWAY_DIR_STEP);
+
         /*
          * ============================================================
          * 步长淡入淡出 (只剩"起步淡入"和"目标速度归零淡出"两条路)
@@ -1068,9 +1117,14 @@ static void motion_task_main(void *pvParam)
 
             // 中位点偏移: 中点平移 (center_offset) + 前/后腿间距的一半 (±spacing/2)
             //   —— 间距正 = 展开 (前腿往前 + 后腿往后), 负 = 收窄, 见 set_center_spacing 注释。
+            // + 相位联动摆动 (sway): t = g_phase/2π (0 = LH 抬脚), 见 SWAY_* 常量注释。
+            //   符号: 足端图案 +Δ ⇒ 重心相对支撑 -Δ; 这里给的是足端上的偏移。
+            float sway_x = -g_ramp_sway * g_sway_dir
+                         * cosf(2.0f * g_phase - SWAY_DELTA * 4.0f * (float)M_PI);
             foot_x += g_ramp_center
                     + ((leg_pair[leg] == IK_LEG_FRONT) ?  g_ramp_spacing * 0.5f
-                                                       : -g_ramp_spacing * 0.5f);
+                                                       : -g_ramp_spacing * 0.5f)
+                    + sway_x;
 
             /* 身体姿态补偿: roll/pitch → 四腿高度偏置
              *
@@ -1165,6 +1219,7 @@ void motion_task_start(void)
     g_ramp_lift    = g_motion.lift_height;
     g_ramp_center  = g_motion.center_offset;
     g_ramp_spacing = g_motion.center_spacing;
+    g_ramp_sway    = 0.0f;   // 摆动从 0 淡入 (起步时步长系数本来也是 0, 目标就是 0)
     g_ramp_pitch   = g_motion.body_pitch;
     g_ramp_roll    = g_motion.body_roll;
     xTaskCreatePinnedToCore(motion_task_main, "motion", MOTION_STACK,
@@ -1319,7 +1374,7 @@ static bool ik_pos_check(float x, float z, int side, int leg_pair,
 //   84 静默吞掉伸展, 表现为脚在地上蹭、狗歪着走, **绝不会报错**。
 static bool traj_combo_bad(float stride, float height, float lift,
                            float center_offset, float center_spacing,
-                           float roll, float pitch)
+                           float sway, float roll, float pitch)
 {
     float L1 = g_motion.ik_L1;
     float L2 = g_motion.ik_L2;
@@ -1361,6 +1416,8 @@ static bool traj_combo_bad(float stride, float height, float lift,
     float ease_pts[5] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
     float min_zf  = height;   // 补偿后最深的足端 (循环后统一报一次, 免得刷 20 行日志)
     int   min_leg = 0;
+    // 相位联动摆动的相位表: 各腿抬脚相位 (前向), 顺序与 compute_offsets 一致 [LF,LH,RF,RH]
+    static const float sway_start[4] = { 0.24f, 0.0f, 0.74f, 0.50f };
 
     for (int i = 0; i < 5; i++) {
         float ease = ease_pts[i];
@@ -1371,6 +1428,11 @@ static bool traj_combo_bad(float stride, float height, float lift,
             // 中位点间距: 跟运行时腿循环 (foot_x += ...) 同一套 —— 前腿 +s/2, 后腿 -s/2
             float xv = xv0 + ((leg_pair[k] == IK_LEG_FRONT) ? half_spacing
                                                             : -half_spacing);
+            // 相位联动摆动: 与运行时同一相位关系 (该腿在 ease 点的时刻 = 抬脚相位 + ease·duty)。
+            // 只查**前向**相位表 —— 逆向是它的镜像、裕量同值 (见 SWAY_* 注释);
+            // duty 取 walk 的 0.20: 摆动只在 walk 族非零, 那时 duty 最贴近 0.20。
+            xv += -sway * cosf(4.0f * (float)M_PI
+                               * (sway_start[k] + ease * 0.20f - SWAY_DELTA));
             float leg_x = ((k == 0 || k == 2) ? g_motion.body_half_l
                                               : -g_motion.body_half_l) + xv;
             float zf = zv + ((leg_side[k] == IK_SIDE_LEFT) ? -z_roll : z_roll)
@@ -1382,9 +1444,9 @@ static bool traj_combo_bad(float stride, float height, float lift,
                 //   center/pitch/roll 把足端推出去了。只报前三个就是"骂错参数"。
                 ESP_LOGW(TAG, "⚠ 足端 (x=%.0f z=%.0f 腿%d) 髋/膝超限, 参数未写入 "
                          "(stride=%.0f height=%.0f lift=%.0f center=%.1f spacing=%.1f "
-                         "roll=%.1f pitch=%.1f)",
+                         "sway=%.1f roll=%.1f pitch=%.1f)",
                          xv, zf, k, stride, height, lift, center_offset,
-                         center_spacing, roll, pitch);
+                         center_spacing, sway, roll, pitch);
                 bad = true;
             }
         }
@@ -1396,9 +1458,9 @@ static bool traj_combo_bad(float stride, float height, float lift,
     if (min_zf < 0.0f) {
         ESP_LOGW(TAG, "⚠ 足端入地 (抬腿过度): 最深 z=%.1fmm (腿%d, 叠加姿态补偿后) —— "
                  "lift=%.0f 超过 height=%.0f, 或姿态/间距压太狠 "
-                 "(center=%.1f spacing=%.1f roll=%.1f pitch=%.1f), 参数未写入",
+                 "(center=%.1f spacing=%.1f sway=%.1f roll=%.1f pitch=%.1f), 参数未写入",
                  min_zf, min_leg, lift, height, center_offset, center_spacing,
-                 roll, pitch);
+                 sway, roll, pitch);
         bad = true;
     }
     return bad;
@@ -1410,6 +1472,7 @@ static bool motion_validate_params(float stride, float height, float lift)
 {
     return traj_combo_bad(stride, height, lift,
                           g_motion.center_offset, g_motion.center_spacing,
+                          g_motion.sway_amp,
                           g_motion.body_roll, g_motion.body_pitch);
 }
 
@@ -1745,7 +1808,8 @@ void motion_set_omega(float omega)
 bool motion_set_body_pose(float pitch, float roll)
 {
     if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
-                       g_motion.center_offset, g_motion.center_spacing, roll, pitch)) {
+                       g_motion.center_offset, g_motion.center_spacing,
+                       g_motion.sway_amp, roll, pitch)) {
         ESP_LOGW(TAG, "→ 姿态被拒, 保持原值: pitch=%.1f roll=%.1f "
                  "(当前 stride=%.0f height=%.0f lift=%.0f center=%.1f spacing=%.1f)",
                  g_motion.body_pitch, g_motion.body_roll,
@@ -1817,6 +1881,7 @@ bool motion_set_center(float offset)
     //   ik_solve_2dof 只把 d 钳到 84 静默吞掉伸展, 表现为脚在地上蹭、狗歪着走。
     if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
                        offset, g_motion.center_spacing,
+                       g_motion.sway_amp,
                        g_motion.body_roll, g_motion.body_pitch)) {
         ESP_LOGW(TAG, "→ 重心被拒, 保持原值: offset=%.1fmm 单看没超 ±%.1fmm, 但跟当前 "
                  "stride=%.0f height=%.0f lift=%.0f spacing=%.1f 组合后足端够不着 "
@@ -1859,6 +1924,7 @@ bool motion_set_center_spacing(float spacing)
     }
     if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
                        g_motion.center_offset, spacing,
+                       g_motion.sway_amp,
                        g_motion.body_roll, g_motion.body_pitch)) {
         ESP_LOGW(TAG, "→ 中位点间距被拒, 保持原值: spacing=%.1fmm 单看没超 ±%.1fmm, 但跟"
                  "当前 stride=%.0f height=%.0f lift=%.0f center=%.1f 组合后足端够不着 "
@@ -1870,6 +1936,40 @@ bool motion_set_center_spacing(float spacing)
     }
     g_motion.center_spacing = spacing;
     ESP_LOGI(TAG, "Center spacing: %.0f mm (runtime only, not saved)", spacing);
+    return true;
+}
+
+/* ---- 相位联动摆动 (body sway): 幅值 A (mm) ----
+ * 背景、公式与幅值-裕量的量化见文件上方 SWAY_* 常量注释; 这里只做两道闸门 + 写入。
+ *
+ * ★ 运行时参数, **不落盘** —— 掉电回默认 (SWAY_DEFAULT)。理由与 center_spacing 同:
+ *   幅值上限随几何变 (低站高 + 大间距时可达到只有 ~2mm), 存着的幅值配上掉电后的
+ *   默认参数可能超可达 ⇒ 不存最安全。
+ * ★ 只在 walk 族生效 (trot/GO 高速段自动归零), 起步/停车随步长系数收放。
+ */
+bool motion_set_sway(float amp)
+{
+    // 写法 !(a >= min && a <= max): 对 NaN 也成立 (NaN 参与比较恒假 ⇒ 取反为真)
+    if (!(amp >= 0.0f && amp <= SWAY_MAX_AMP)) {
+        ESP_LOGW(TAG, "⚠ 摆动幅值超限: %.1fmm (允许 0~%.0f), 保持原值 %.1fmm",
+                 amp, SWAY_MAX_AMP, g_motion.sway_amp);
+        return false;
+    }
+    if (traj_combo_bad(g_motion.stride, g_motion.height, g_motion.lift_height,
+                       g_motion.center_offset, g_motion.center_spacing,
+                       amp,
+                       g_motion.body_roll, g_motion.body_pitch)) {
+        ESP_LOGW(TAG, "→ 摆动幅值被拒, 保持原值: sway=%.1fmm 单看没超 %.0fmm, 但跟当前 "
+                 "stride=%.0f height=%.0f lift=%.0f center=%.1f spacing=%.1f 组合后"
+                 "足端够不着 (摆动吃可达预算, 低站高/大间距时余量很小 —— "
+                 "想加摆动先减小 stride 或间距、或抬高站高)",
+                 amp, SWAY_MAX_AMP, g_motion.stride, g_motion.height,
+                 g_motion.lift_height, g_motion.center_offset,
+                 g_motion.center_spacing);
+        return false;
+    }
+    g_motion.sway_amp = amp;
+    ESP_LOGI(TAG, "Sway: %.1f mm (runtime only, not saved)", amp);
     return true;
 }
 

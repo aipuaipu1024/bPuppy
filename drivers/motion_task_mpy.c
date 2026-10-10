@@ -193,6 +193,35 @@ STATIC mp_obj_t mp_motion_set_center_spacing(mp_obj_t obj) {
 STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_motion_set_center_spacing_obj,
                                  mp_motion_set_center_spacing);
 
+// 相位联动摆动 (body sway) 幅值 mm (0=关)。返回 True=已采纳, False=被拒。
+// walk 里四个临界瞬间 (后腿抬/前腿落) 重心离支撑边界只有 ~2mm; 摆动把这些瞬间
+// 等效成重心前后挪 —— 幅值越大越稳, 但吃可达预算 (低站高+大间距时余量很小)。
+// 只在 walk 族生效 (trot/GO 高速段自动归零); 运行时参数, 不落盘。
+STATIC mp_obj_t mp_motion_set_sway(mp_obj_t obj) {
+    float a = mp_obj_get_float(obj);
+    bool ok = motion_set_sway(a);
+    if (!ok) {
+        motion_ensure_geometry_loaded();
+        const motion_state_t *m = motion_get_state();
+        mp_printf(&mp_plat_print, "⚠ 摆动幅值 %.1fmm 被拒, 保持原值 %.1fmm —— 要么超 "
+                  "0~%.0fmm, 要么跟当前 stride=%.0f height=%.0f lift=%.0f center=%.1f "
+                  "spacing=%.1f 组合后足端够不着\n",
+                  a, m->sway_amp, SWAY_MAX_AMP,
+                  m->stride, m->height, m->lift_height,
+                  m->center_offset, m->center_spacing);
+    }
+    return mp_obj_new_bool(ok);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(mp_motion_set_sway_obj, mp_motion_set_sway);
+
+// 读回摆动幅值 (mm)
+STATIC mp_obj_t mp_motion_get_sway(void) {
+    motion_ensure_geometry_loaded();
+    const motion_state_t *m = motion_get_state();
+    return mp_obj_new_float(m->sway_amp);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(mp_motion_get_sway_obj, mp_motion_get_sway);
+
 STATIC mp_obj_t mp_motion_set_body_dims(mp_obj_t bl_obj, mp_obj_t bw_obj) {
     float bl = mp_obj_get_float(bl_obj);
     float bw = mp_obj_get_float(bw_obj);
@@ -324,8 +353,8 @@ STATIC mp_obj_t mp_motion_show_geometry(void) {
               m->body_half_l, m->body_half_w, m->body_half_l * 2, m->body_half_w * 2);
     mp_printf(&mp_plat_print, "Hip:     %.0f ~ %.0f deg\n", ik_hip_min, ik_hip_max);
     mp_printf(&mp_plat_print, "Knee:    %.0f ~ %.0f deg\n", ik_knee_min, ik_knee_max);
-    mp_printf(&mp_plat_print, "Offset:  %.0f mm  Spacing: %.0f mm  Lift: %.0f mm\n",
-              m->center_offset, m->center_spacing, m->lift_height);
+    mp_printf(&mp_plat_print, "Offset:  %.0f mm  Spacing: %.0f mm  Sway: %.0f mm  Lift: %.0f mm\n",
+              m->center_offset, m->center_spacing, m->sway_amp, m->lift_height);
     mp_printf(&mp_plat_print, "Omega:   %.2f rad/s\n", m->omega_base);
     mp_printf(&mp_plat_print, "--- Servo Calibration (ref_deg) ---\n");
     for (int i = 0; i < 8; i++) {
@@ -352,6 +381,8 @@ STATIC const mp_rom_map_elem_t bpuppy_motion_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_set_direction), MP_ROM_PTR(&mp_motion_set_direction_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_center),  MP_ROM_PTR(&mp_motion_set_center_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_center_spacing), MP_ROM_PTR(&mp_motion_set_center_spacing_obj) },
+    { MP_ROM_QSTR(MP_QSTR_set_sway),      MP_ROM_PTR(&mp_motion_set_sway_obj) },
+    { MP_ROM_QSTR(MP_QSTR_get_sway),      MP_ROM_PTR(&mp_motion_get_sway_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_body_dims), MP_ROM_PTR(&mp_motion_set_body_dims_obj) },
     { MP_ROM_QSTR(MP_QSTR_set_joint_limits), MP_ROM_PTR(&mp_motion_set_joint_limits_obj) },
     { MP_ROM_QSTR(MP_QSTR_load_geometry), MP_ROM_PTR(&mp_motion_load_geometry_obj) },

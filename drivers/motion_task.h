@@ -37,6 +37,11 @@ typedef enum {
     MODE_MOTION,
 } motion_mode_t;
 
+/* ---- 相位联动摆动 (body sway) 的默认值与量级闸门 ----
+ * 公式、幅值-裕量的量化、为什么只能前后 (无左右自由度) 见 motion_task.cpp 的 SWAY_* 注释 */
+#define SWAY_DEFAULT       12.0f   // 默认幅值 (mm); 0 = 关
+#define SWAY_MAX_AMP       24.0f   // 量级闸门 (组合校验才是真闸门)
+
 /* ---- 运动状态 ---- */
 typedef struct {
     gait_type_t gait;           // 当前步态
@@ -56,6 +61,7 @@ typedef struct {
     float       turn;           // 转弯系数 -1(左) ~ +1(右)
     float       center_offset;  // 中位点**中点**前后平移 (正=前移, 负=后移)
     float       center_spacing; // 前/后腿中位点**间距**: 前腿 +s/2, 后腿 -s/2 (正=放宽, 负=收窄)
+    float       sway_amp;       // 相位联动摆动幅值 (mm, 见 motion_set_sway; 0=关)
     float       body_half_l;    // 前后髋半距 (mm), 默认 62.5
     float       body_half_w;    // 左右髋半宽 (mm), 默认 59.0
     bool        emergency_stop; // 急停标志
@@ -157,6 +163,19 @@ bool motion_set_center(float offset);
 //   (1) 量级超 ±2×前后髋半距 (默认 ±125mm);
 //   (2) 量级没超, 但跟当前 stride/height/lift/中点组合后足端够不着(组合校验)。
 bool motion_set_center_spacing(float spacing);
+
+// 设置相位联动摆动 (body sway) 幅值 A (mm, ≥0; 0 = 关)。
+// 用途: walk 里支撑三足的斜边几乎从机身中心穿过 (后腿抬 / 前腿落 四个瞬间重心到
+// 边界只有 ~2mm)。摆动给足端图案叠加 sway_x(t) = -A·dir·cos(4π(t-0.095)) ——
+// 这些瞬间等效于重心前后挪 ±0.28A·(格)。
+// ★ 只能前后 —— 本机构足端 y 恒为 ±body_half_w (ik 只有 (x,z)), 无左右自由度;
+// ★ 只在 walk 族生效: trot/GO 高速段自动归零, 起步/停车随步长系数收放;
+// ★ 运行时参数, **不落盘** (掉电回默认 SWAY_DEFAULT=12mm)。
+// 返回是否写入成功 (false=被拒, 保持原值)。被拒有两种原因:
+//   (1) 量级超 SWAY_MAX_AMP=24mm;
+//   (2) 量级没超, 但跟当前 stride/height/lift/center/spacing 组合后足端够不着
+//       (低站高+大间距时可达余量可能只剩 2~3mm, 只能给小幅值)。
+bool motion_set_sway(float amp);
 
 // 检查运动任务是否正在运行（enabled 且未急停）
 bool motion_is_running(void);
