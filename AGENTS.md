@@ -743,7 +743,7 @@ python gait_sim.py --stride 80 --height 70 --fps 4
 ```
 
 另外几个是**离线审计**用的 —— 逐帧复刻固件的状态机, 用来在动代码**之前**先把账算清楚
-(它们都 `import stop_audit`, 那是共同的逐帧内核):
+(前四个都 `import stop_audit`, 那是共同的逐帧内核; `center_spacing_solver.py` 独立):
 
 | 脚本 | 算什么 |
 |---|---|
@@ -751,6 +751,7 @@ python gait_sim.py --stride 80 --height 70 --fps 4
 | `flip_audit2.py` | 换向: 扫遍全踩地窗口的每个相位, 量翻转后位置连不连续 |
 | `support_plane_scan.py` | 支撑三足平面 vs 机身平面的 pitch/roll 分量 (对比几种俯仰补偿写法) |
 | `validate_limits.py` | 复刻 `traj_combo_bad()`, 算重心 / 俯仰 / 横滚的可用上限 |
+| `center_spacing_solver.py` | **中位点间距配平**: 给 S/H/抬脚, 细采样整条轨迹求"全轨迹最小角度裕量最大"的 `set_center_spacing` 值 (方向随 (S,H) 变: 低站高多展开、个别组合反而收窄; 口径与固件 ik_pos_check 同源, 但采样更密 ⇒ 结论更保守) |
 
 
 ## OV2640 摄像头
