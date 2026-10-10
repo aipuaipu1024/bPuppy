@@ -124,6 +124,10 @@ bpuppy_motion.cal_ik(40, 45)                     # Leg lengths (L1, L2 mm)
 bpuppy_motion.set_body_dims(62.5, 59)            # Hip spacing (front/rear half-spacing, left/right half-width mm)
 bpuppy_motion.set_joint_limits(0, 180, 10, 170)  # Joint limits (hip min/max, knee min/max deg)
 bpuppy_motion.set_center(0)                      # CoM offset (positive = feet forward); must also stay reachable combined with stride/height — only ±11.4mm at default parameters
+bpuppy_motion.set_center_spacing(0)              # Neutral-point spacing: front +s/2, rear -s/2 (positive = spread); runtime-only, not saved; walk/trot only (not applied in GO)
+bpuppy_motion.set_sway(0)                        # Phase-locked sway: stability margin at walk lift/land instants (mm); **default 0 (off)**, 3~7 is smooth, > 0.0995×stride makes the body "pause every step"; runtime-only, not saved
+bpuppy_motion.get_center()                       # Read back (center offset, spacing)
+bpuppy_motion.get_sway()                         # Read back the sway amplitude (mm)
 bpuppy_motion.show_geometry()                    # Show everything
 ```
 
@@ -606,8 +610,10 @@ Every call writes NVS once, so **the last value you settle on is the final one**
 | Geometry | `bpuppy_motion.set_joint_limits(0, 180, 10, 170)` ★ | Hip 0~180, knee 10~170 (deg) |
 | Servo | `bpuppy_servo.cal(ch, 90)` ★ | Calibration reference angles for all 8 channels (deg) |
 | CoM | `bpuppy_motion.set_center(0)` ★ | Foot center offset (mm); positive = forward. **Two checks**: ① ≤ upper-leg length / 2 (default ±20); ② reachable in combination with the current stride/height — at default parameters ② is tighter and it actually only goes to **±11.4mm** |
+| CoM | `bpuppy_motion.set_center_spacing(0)` | Neutral-point **spacing** (mm): front legs +s/2, rear legs −s/2; positive = spread, negative = contract. At a low stance, spreading balances the hip/knee margins (S=70/H=45, spread to 66 → hip margin 0.4°→23.6°); same two checks as `set_center`. Read back with `get_center()`. ⚠ **Runtime-only, not saved** (resets on power-off); **walk/trot only — not applied in GO** |
+| CoM | `bpuppy_motion.set_sway(0)` | Phase-locked **sway** (mm): stability-margin compensation at the four walk lift/land instants (there the CoM is only ~2mm from the support edge — but the swing foot is still grazing, so the true worst margin is elsewhere, ~4.6mm). **Default 0 (off)**; turn it on as needed: **3~7 is smooth** (effective worst margin 4.6 → ~7.5mm); **above 0.0995×stride** (7mm at S70) the body visibly "pauses every step" — the walking speed itself is the sway's speed budget, so this can't be waved away. Same two checks as `set_center`. Read back with `get_sway()`. ⚠ Not saved (runtime-only); walk family only (auto-zeroed in trot / high-speed GO) |
 
-> The parameters above are written to NVS automatically when set (9 geometry/CoM values + 3 points × 8 servos = 24 calibration values); `motion.start()` restores them automatically. With no NVS data it falls back to the `ik.h` macro defaults.
+> The parameters above are written to NVS automatically when set (9 geometry/CoM values + 3 points × 8 servos = 24 calibration values); `motion.start()` restores them automatically. With no NVS data it falls back to the `ik.h` macro defaults. **Exception**: `set_center_spacing` and `set_sway` are runtime-only and are never saved.
 >
 > `show_geometry()` prints the geometry parameters + each servo's **90° point** calibration value; **it does not show the 0°/180° points** — read those separately with `bpuppy_servo.get_cal_point(ch, 0/2)`.
 >
@@ -615,14 +621,14 @@ Every call writes NVS once, so **the last value you settle on is the final one**
 > `poses.stand()` (including the power-on stand pose and the "Stand" block) and `balance` both read it live, so **after `cal_ik()` changes the leg lengths, the stand pose and self-balancing follow immediately**.
 > ⚠ Don't compute the stand pose with `bpuppy_ik.L1/L2` — those are **compile-time defaults**; `cal_ik()` can't change them, and mixing them makes the stand pose and the gait solve with two different leg lengths.
 >
-> **Illegal values are rejected** (values stay unchanged, returns `False`, the REPL prints `⚠ ... 被拒`): `cal_ik` / `set_body_dims` require 1~500 mm; `set_joint_limits` requires `min < max` within the servo travel (currently 270° servos = −35~215); for `set_center` / `set_body_pose` see below.
+> **Illegal values are rejected** (values stay unchanged, returns `False`, the REPL prints `⚠ ... 被拒`): `cal_ik` / `set_body_dims` require 1~500 mm; `set_joint_limits` requires `min < max` within the servo travel (currently 270° servos = −35~215); for `set_center` / `set_center_spacing` / `set_sway` / `set_body_pose` see below.
 > Because these values live in NVS and **survive firmware upgrades**, both the write path and the boot-time read path validate them — a board with corrupted values shows `⚠ NVS 里 ... 非法 -> 回退默认` in the boot log after flashing new firmware and recovers automatically, rather than staying broken forever.
 >
-> **`set_center` and `set_body_pose` both have two checks** (since 2026-09-28): ① each on its own — CoM ≤ half the upper-leg length (default ±20mm); ② **whether the foot ends can still reach**, combined with the current stride / height / lift / pose. When they can't reach, `ik_solve_2dof` just clamps the distance to the reachable maximum and **silently loses extension** (feet dragging on the ground, dog walking crooked — **no error**), so both checks are enforced. **Order doesn't matter**: whether you lean the pose first and then set the parameters, or the other way around, both are caught.
+> **`set_center`, `set_center_spacing`, `set_sway` and `set_body_pose` all have two checks** (since 2026-09-28): ① each on its own — CoM ≤ half the upper-leg length (default ±20mm), spacing ≤ 2× hip half-spacing (default ±125mm), sway amplitude ≤ 24mm; ② **whether the foot ends can still reach**, combined with the current stride / height / lift / pose. When they can't reach, `ik_solve_2dof` just clamps the distance to the reachable maximum and **silently loses extension** (feet dragging on the ground, dog walking crooked — **no error**), so both checks are enforced. **Order doesn't matter**: whether you lean the pose first and then set the parameters, or the other way around, both are caught.
 >
 > ② is much tighter than ①. At the default stride=70 / height=70 the foot already extends to 78.3mm with only 5.7mm left to the reachable maximum of 84 ⇒ **the CoM can actually shift at most ±11.4mm**, and **body pose \|pitch\| ≤ 3.7°, \|roll\| ≤ 6.2°**. To shift more / lean more, **reduce the stride first**: stride 60 → CoM 15mm passes; stride 40 → pitch up to 8° passes.
 >
-> ⚠ When `set_center` is rejected **nothing is written** to flash (both checks return before the NVS write). At boot, reading back NVS **rechecks only check ①'s magnitude** (stride/height are still at defaults then, so the combined check ② can't be computed) — so don't expect boot to catch combinations that were legal when stored but became unreachable with a later stride change.
+> ⚠ When `set_center` is rejected **nothing is written** to flash (both checks return before the NVS write); `set_center_spacing` / `set_sway` **never touch flash at all** (runtime-only). At boot, reading back NVS **rechecks only check ①'s magnitude** (stride/height are still at defaults then, so the combined check ② can't be computed) — so don't expect boot to catch combinations that were legal when stored but became unreachable with a later stride change.
 
 
 ## 5. Sensors & Attitude

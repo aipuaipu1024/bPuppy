@@ -126,7 +126,9 @@ bpuppy_motion.set_body_dims(62.5, 59)            # 髋距 (前后半距, 左右�
 bpuppy_motion.set_joint_limits(0, 180, 10, 170)  # 限位 (髋min/max, 膝min/max deg)
 bpuppy_motion.set_center(0)                      # 重心偏移 (正=脚前移)；还要跟 stride/height 组合够得着, 默认参数下只到 ±11.4mm
 bpuppy_motion.set_center_spacing(0)              # 中位点间距: 前腿 +s/2、后腿 -s/2 (正=展开)；运行时、不落盘；只在 walk/trot 生效 (GO 不叠加)
+bpuppy_motion.set_sway(0)                        # 相位联动摆动: walk 抬脚瞬间的稳定裕量补偿 (mm)；**默认 0 (关)**，3~7 平滑、>0.0995×步长会"走一步停一下"；运行时、不落盘
 bpuppy_motion.get_center()                       # 读回 (中点平移, 间距)
+bpuppy_motion.get_sway()                         # 读回摆动幅值 (mm)
 bpuppy_motion.show_geometry()                    # 查看全部
 ```
 
@@ -615,8 +617,9 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 | 舵机 | `bpuppy_servo.cal(ch, 90)` ★ | 8 路校准参考角 (deg) |
 | 重心 | `bpuppy_motion.set_center(0)` ★ | 中位点**中点**前后平移 (mm)，正=前移，前后腿一起挪，**两道闸门**：① ≤ 大腿长/2（默认 ±20）② 跟当前 stride/height 组合够得着 —— 默认参数下 ② 更紧，实际只到 **±11.4mm** |
 | 重心 | `bpuppy_motion.set_center_spacing(0)` | 中位点**间距** (mm)：前腿 +s/2、后腿 −s/2，正=展开、负=收窄。低站高时展开可配平髋/膝余量（S=70/H=45 展开到 66 → 髋余量 0.4°→23.6°）；闸门同 set_center 两道。读回 `get_center()`。⚠ **不写 NVS、掉电清零**（运行时参数）；**只在 walk/trot 生效，GO 不叠加** |
+| 重心 | `bpuppy_motion.set_sway(0)` | 相位联动**摆动** (mm)：walk 抬脚/落地四个瞬间的稳定裕量补偿（那时重心离支撑边只有 ~2mm，但摆动腿还贴地——真实最低裕量在别处，约 4.6mm）。**默认 0（关）**，按需开：**3~7 平滑**（有效最低裕量 4.6→~7.5mm）；**> 0.0995×步长**（S70 → 7mm）机身会"走一步停一下"—— 走速本身就是摆动的速度尺子，改不了。闸门同 set_center 两道。读回 `get_sway()`。⚠ 不写 NVS、掉电清零；只在 walk 族生效（trot / GO 高速段自动归零）|
 
-> 以上参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**例外**：`set_center_spacing` 是运行时参数，不落盘。
+> 以上参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**例外**：`set_center_spacing` 和 `set_sway` 是运行时参数，不落盘。
 >
 > `show_geometry()` 打印几何参数 + 各路舵机的 **90° 点**校准值，**不显示 0°/180° 点** —— 那两点要用 `bpuppy_servo.get_cal_point(ch, 0/2)` 单独读。
 >
@@ -624,14 +627,14 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 > `poses.stand()`（含上电站姿、「站立」积木）和 `balance` 都从它现读，所以 **`cal_ik()` 改完腿长，站姿和自平衡会立刻跟上**。
 > ⚠ 别用 `bpuppy_ik.L1/L2` 算站姿 —— 那是**编译期默认值**，`cal_ik()` 改不到它，混用会让站姿和步态按两套腿长解算。
 >
-> **非法值会被拒**（保持原值不变，返回 `False`，repl 打印 `⚠ ... 被拒`）：`cal_ik` / `set_body_dims` 需 1~500 mm；`set_joint_limits` 需 `min < max` 且在舵机行程内（当前 270° 舵机 = −35~215）；`set_center` / `set_center_spacing` / `set_body_pose` 见下。
+> **非法值会被拒**（保持原值不变，返回 `False`，repl 打印 `⚠ ... 被拒`）：`cal_ik` / `set_body_dims` 需 1~500 mm；`set_joint_limits` 需 `min < max` 且在舵机行程内（当前 270° 舵机 = −35~215）；`set_center` / `set_center_spacing` / `set_sway` / `set_body_pose` 见下。
 > 因为这几个值写进 NVS 且**跨固件升级存活**，写入和开机读取两处都校验 —— 已写坏的板子刷完新固件会在开机日志看到 `⚠ NVS 里 ... 非法 -> 回退默认` 并自动恢复，不会一直坏下去。
 >
-> **`set_center` / `set_center_spacing` 和 `set_body_pose` 都是两道闸门**（2026-09-28 起）：① 单独看自己 —— 重心 ≤ 大腿长的一半（默认 ±20mm）、间距 ≤ 2×髋半距（默认 ±125mm）；② 跟当前 stride / height / lift / 姿态**组合起来足端够不够得着**。够不着时 `ik_solve_2dof` 只会把距离钳到可达上限、**静默失去伸展**（脚在地上蹭、狗歪着走，**不报错**），所以两道都拦。**顺序无所谓**：先压姿态再设参数、还是反过来，都拦得住。
+> **`set_center` / `set_center_spacing` / `set_sway` 和 `set_body_pose` 都是两道闸门**（2026-09-28 起）：① 单独看自己 —— 重心 ≤ 大腿长的一半（默认 ±20mm）、间距 ≤ 2×髋半距（默认 ±125mm）、摆幅 ≤ 24mm；② 跟当前 stride / height / lift / 姿态**组合起来足端够不够得着**。够不着时 `ik_solve_2dof` 只会把距离钳到可达上限、**静默失去伸展**（脚在地上蹭、狗歪着走，**不报错**），所以两道都拦。**顺序无所谓**：先压姿态再设参数、还是反过来，都拦得住。
 >
 > ② 比 ① 紧得多。默认 stride=70 / height=70 时脚已经伸到 78.3mm、离可达上限 84 只剩 5.7mm ⇒ **重心实际最多挪 ±11.4mm**，**机身姿态 \|俯仰\| ≤ 3.7°、\|横滚\| ≤ 6.2°**。想挪更多 / 压更大就**先减小步长**：stride 60 → 重心 15mm 能过；stride 40 → 俯仰能过 8°。
 >
-> ⚠ `set_center` 被拒时**不写** flash（两道校验都在写 NVS 之前返回）；`set_center_spacing` **完全不碰 flash**（运行时参数）。开机回读 NVS **只复查 ① 量级**（那时 stride/height 还是默认值，② 组合校验没法算）—— 所以别指望开机时拦住"存进去合法、配上后来改的 stride 才够不着"的组合。
+> ⚠ `set_center` 被拒时**不写** flash（两道校验都在写 NVS 之前返回）；`set_center_spacing` / `set_sway` **完全不碰 flash**（运行时参数）。开机回读 NVS **只复查 ① 量级**（那时 stride/height 还是默认值，② 组合校验没法算）—— 所以别指望开机时拦住"存进去合法、配上后来改的 stride 才够不着"的组合。
 >
 > **间距取多少**：不用手算 —— `gait_sim/center_spacing_solver.py` 现算（给步长/站高/抬脚 → 输出等裕量间距 + 裕量曲线，方向随参数组合自动判正负）。
 

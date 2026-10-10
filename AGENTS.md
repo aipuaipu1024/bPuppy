@@ -27,7 +27,8 @@ bPuppy 是基于 ESP32-S3 的 8 自由度四足机器狗（4腿 × 2DOF：髋+�
 | 速度范围 | 0~10 | `set_speed()` |
 | 抬腿默认 | 30mm | `set_params()` 第 2 参 |
 | 中位点中点平移 | 0mm | `set_center()` → NVS |
-| 中位点间距 | 0mm | `set_center_spacing()`（**运行时，不落盘**；前 +s/2 / 后 −s/2，正=展开；只在 walk/trot 生效，GO 不叠加）|
+| 中位点间距 | 0mm（**默认关**）| `set_center_spacing()`（**运行时，不落盘**；前 +s/2 / 后 −s/2，正=展开；只在 walk/trot 生效，GO 不叠加）。**只在 MicroPython 侧，KittenBlock 不加积木**（用户决定 2026-10-11）|
+| 相位联动摆动 | 0mm（**默认关**）| `set_sway(A)`（**运行时，不落盘**；walk 族的静稳裕量补偿，只在 MicroPython 侧，KittenBlock 无积木）。⚠ 幅值受**步速**约束：不倒退上限 ≈ **0.0995×stride**（S70→7mm）—— 超了机身会"走一步停一下"（A=12 实测观感）；3~7 是平滑区间（有效最低裕量 4.6→~7.5mm）。口径与推导见 `motion_task.cpp` 的 SWAY_* 注释、`gait_sim/sway_solver.py` |
 | Walk 最优 | speed=2.5, stride=70, height=70 | 实测 |
 | Trot 最优 | speed=8.5, stride=70, height=60 | 实测 |
 
