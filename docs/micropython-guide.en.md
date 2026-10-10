@@ -72,11 +72,8 @@ bpuppy_motion.set_gait("walk")
 ```
 
 > **`set_params(stride, lift, height)` validates and writes all three values in one call**; the `True`/`False` return value tells you whether they were written.
-> The lift used to live in a separate function `set_lift`, and the two functions each validated against the other's **old** value, which forced a call order (first `set_lift`, then `set_params`) — now they are merged into a single call and that trap is gone. `set_lift` has been removed.
 >
 > Speed is the **step frequency** and has nothing to do with the leg trajectory, so it has its own `set_speed(0~10)` you can change at any time without touching stride/lift/height. It also returns `True`/`False`.
->
-> ⚠ **After upgrading the firmware you must download your program again**: `set_lift(...)` in an old program raises `AttributeError`, and the old-style `set_params(speed, stride, height)` call gets its arguments misaligned.
 
 
 ### 3. Stand-up Self-Balancing + IMU Readings
@@ -171,7 +168,6 @@ Three configurations measured as optimal (full code in Quick Reference 1 above �
 
 > **Changing standing height / lift / pitch / roll / CoM while moving is smoothly interpolated** — it advances a small step each frame and typically takes 0.3s to arrive; it never jumps in a single frame. When stationary the change takes effect immediately (the "max 3° per frame" limiter covers that case).
 >
-> `set_lift()` has been removed (merged into `set_params` as the 2nd argument); the 3rd argument `yaw` of `set_body_pose` was a dead field and has been removed.
 > Read values back with `get_params()`, whose order is `(speed, stride, height, lift, omega, turn, gait, direction)`
 > — note this is **a different argument order** from `set_params(stride, lift, height)`.
 > `[1]` is the **signed** stride (= magnitude × direction; a negative sign means backward), and `[7]` is the direction itself.
@@ -204,7 +200,7 @@ bpuppy_motion.set_params(70, 30, 70)     # 4. The three advanced parameters: str
 The four are **mutually independent**: changing direction doesn't touch the stride magnitude, changing stride won't turn the dog around, and changing speed doesn't affect the gait.
 `go` is the only exception — its stride/height/lift are derived from `speed`, and values set with `set_params`
 **are accepted and saved but do not participate in go's motion** (they take effect as soon as you switch to walk / trot).
-But **direction stays independent**: go obeys `set_direction` as well; forward/backward no longer depends on the stride's sign.
+But **direction stays independent**: go obeys `set_direction` as well.
 
 **Gait list:**
 
@@ -223,13 +219,9 @@ But **direction stays independent**: go obeys `set_direction` as well; forward/b
 > **An unknown gait name → stop the robot; this is a deliberate fail-safe, not a defect.**
 > Inside `set_gait()`, `gait_type_t g = GAIT_STOP;` is the initial value; when the name matches no entry no assignment happens, so it falls straight through to STOP. So a single typo (e.g. `"tr"`) = the dog stops in place.
 > The reason is that **commands can genuinely get corrupted** — for example, Bluetooth transfers of Chinese text / long strings drop whole runs of bytes (code containing Chinese loses bytes over Bluetooth, so `"trot"` may arrive as `"tr"`). Here, stopping is the only safe outcome, better than guessing a gait from a corrupted string.
-> Since v3.0-13 an unknown name prints `⚠ 未知步态 "xxx" → 停车` on the REPL; the behavior is unchanged, it's just no longer silent.
+> An unknown name prints `⚠ 未知步态 "xxx" → 停车` on the REPL.
 >
 > *The device prints these messages in Chinese.*
->
-> ⚠ The old aliases `"walkfwd"` / `"walkbck"` / `"trotfwd"` / `"trotbck"` **have been removed**; they now hit the fallback above (stop + warning).
-> They never should have existed — four names mapped to the same two gaits, and direction relied entirely on **the stride's sign at the time**, so
-> `set_gait("walkbck")` would still walk forward with a forward stride. Direction is now set explicitly with `set_direction(±1)`.
 
 ### 1.2.1 Run Modes (automatic switching)
 
@@ -338,7 +330,7 @@ IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
 
 ### 2.1 Serial Communication — bpuppy_uart
 
-**UART2 (default communication port)** — GPIO 20=RX, 19=TX; connects to the CI-33T voice module / micro:bit. ⚠ Since 2026-08-19 the **pins are swapped** (TX=GPIO19/RX=GPIO20); for the reason see the UART2 section of [硬件连接.md](../PCB/硬件连接.md).
+**UART2 (default communication port)** — GPIO 19=TX, 20=RX; connects to the CI-33T voice module / micro:bit. See the UART2 section of [硬件连接.md](../PCB/硬件连接.md).
 
 ```python
 import bpuppy_uart
@@ -384,8 +376,7 @@ n = bpuppy_uart.u1_any()
 >
 > **Fix (firmware customization)**: comment out the `usb_init()` call in `components/mr9you__micropython-helper/mpy_startup.c` to skip TinyUSB initialization; GPIO19/20 return to plain GPIO for UART2. **USB-CDC virtual serial is therefore unavailable — this is not a feature that can be turned on**: the two pins belong to the voice module, and restoring USB serial means giving up UART2 (REPL/flashing go over UART0=COM14 and BLE goes over RF, both unaffected).
 
-Protocol: **upstream** = `AA 55 <CMD> <PARAM> 55 AA`; **downstream** = **fixed-length 4-byte frames, two kinds**
-(changed 2026-09-26; previously downstream was a bare 2-byte `<CMD> <PARAM>`).
+Protocol: **upstream** = `AA 55 <CMD> <PARAM> 55 AA`; **downstream** = **fixed-length 4-byte frames, two kinds**.
 
 **Downstream (CI-33T → this system)** — two frame kinds, distinguished by the **first byte's value range**:
 
@@ -414,11 +405,7 @@ The CMD byte of a command frame (`0x30`–`0x3F`; `0x3D`/`0x3E` unused for now):
 command frames dispatch events, angle frames are stored into `voice.SoundAngle`. **If fewer than 4 bytes have arrived it keeps them for the next round**,
 so frames split apart or stuck together by the serial stream don't affect parsing.
 
-> ⚠ **This change fixed a real bug (before 2026-09-26)**: the old version **scanned byte by byte** for the command range,
-> and the first byte of an angle frame `<angle> 00 00 00` is the angle itself — **at 48–63 degrees the low byte falls right
-> inside the scanned range and gets executed as a motion command** (53° → `0x35` = speed up; 48–63 degrees cover the whole `0x30`–`0x3F` range).
-> Now the decision is structural, so the problem is gone at the root. The criterion is the non-overlapping first-byte ranges — no reliance on
-> timing, length, or delays.
+> The criterion is the non-overlapping first-byte ranges — no reliance on timing, length, or delays.
 
 **Upstream (this system → CI-33T)** — sound/feedback; frame = `AA 55 <CMD> <PARAM> 55 AA`:
 
@@ -426,7 +413,7 @@ so frames split apart or stuck together by the serial stream don't affect parsin
 |--------|------|
 | `AA 55 70 00 55 AA` | Bark sound #0 |
 | `AA 55 70 01 55 AA` | Bark sound #1 = **"woof woof"** (confirmed by testing) |
-| `AA 55 70 02 55 AA` | Bark sound #2 = **"whimper"** (confirmed by testing; changed on 2026-09-27 from `AA 55 71 02`) |
+| `AA 55 70 02 55 AA` | Bark sound #2 = **"whimper"** (confirmed by testing) |
 | `AA 55 71 00 55 AA` | Platform custom sound slot 0 |
 | `AA 55 72 <number> 55 AA` | **Announce a number** (0–100; sent by the "Report Number [NUM]" block) |
 
@@ -443,9 +430,9 @@ voice.on_cmd(0x30, fn)  # Register a callback: fn runs when the stop command is 
 voice.stop()            # Stop the background polling
 ```
 
-> ⚠ **Events only — no built-in actions (since 2026-08-19)**: on receiving a voice command the firmware **only prints + fires event callbacks** (KittenBlock event blocks), with **no action built in** (forward/backward etc. were all removed); all actions are programmed by the user in KittenBlock.
+> ⚠ **Events only — no built-in actions**: on receiving a voice command the firmware **only prints + fires event callbacks** (KittenBlock event blocks); all actions are programmed by the user in KittenBlock.
 >
-> ⭐ **The only exception: `0x3F` announce voltage (since 2026-09-27)** — on receiving it the firmware **automatically** sends
+> ⭐ **The only exception: `0x3F` announce voltage** — on receiving it the firmware **automatically** sends
 > an "announce number" frame to the CI-33T with the battery percentage (`AA 55 72 <pct> 55 AA`, with pct from `voltage.read_pct()`).
 > Reason for the exception: it is "reading out the firmware's own battery measurement" — an announcement of the firmware's own state, not motion/pose;
 > and if left to user code, the sole source of truth for voltage is in the C layer, unreachable from Python. **No user code required.**
@@ -458,11 +445,10 @@ voice.stop()            # Stop the background polling
 
 **CI-33T side configuration (the 智能公元 platform)**: under "Offline Command Words & Responses Customization" (离线命令词与应答语自定义) configure a **serial send** for each command word ("forward", "stop", …) that emits the corresponding **command frame** `BB <CMD> 00 EE` (e.g. forward = `BB 31 00 EE`; see the CMD table above); **leave the sound-source angle output as `<angle> 00 00 00` — do not change it** (change it and parsing breaks). To make this system emit sound, configure a "Serial Input" (串口输入) entry matching the `AA 55 <data> 55 AA` frame to trigger the matching sound/announcement. Set both sides to 9600 baud.
 
-> ⚠ **The module side and the firmware must both use the new format**: with command frames changed from 2 to 4 bytes, **new firmware does not recognize the old 2-byte commands**
-> (2 bytes can't form a 4-byte frame, so they sit there as a fragment) and all 14 command words go dead.
+> ⚠ **The module side and the firmware must use the same command-frame format** (4 bytes, `BB <CMD> 00 EE`): the firmware does not recognize a 2-byte command
+> (it can't form a frame and is dropped as a fragment) and all 14 command words go dead.
 > So before flashing the new firmware, update the platform side's 14 command outputs to `BB <CMD> 00 EE`;
 > or accept "flash first, voice commands unresponsive in the meantime" — they recover once the platform side is updated.
-> The reverse (platform updated first, firmware still old) **does not affect use** — old firmware byte-scans and still dispatches the CMD byte inside the frame.
 
 
 ### 2.2 Power-On Scripts
@@ -632,7 +618,7 @@ Every call writes NVS once, so **the last value you settle on is the final one**
 > **Illegal values are rejected** (values stay unchanged, returns `False`, the REPL prints `⚠ ... 被拒`): `cal_ik` / `set_body_dims` require 1~500 mm; `set_joint_limits` requires `min < max` within the servo travel (currently 270° servos = −35~215); for `set_center` / `set_body_pose` see below.
 > Because these values live in NVS and **survive firmware upgrades**, both the write path and the boot-time read path validate them — a board with corrupted values shows `⚠ NVS 里 ... 非法 -> 回退默认` in the boot log after flashing new firmware and recovers automatically, rather than staying broken forever.
 >
-> **`set_center` and `set_body_pose` both have two checks** (since 2026-09-28): ① each on its own — CoM ≤ half the upper-leg length (default ±20mm); ② **whether the foot ends can still reach**, combined with the current stride / height / lift / pose. When they can't reach, `ik_solve_2dof` just clamps the distance to the reachable maximum and **silently loses extension** (feet dragging on the ground, dog walking crooked — **no error**), so both checks are enforced. **Order no longer matters**: whether you lean the pose first and then set the parameters, or the other way around, both are caught.
+> **`set_center` and `set_body_pose` both have two checks** (since 2026-09-28): ① each on its own — CoM ≤ half the upper-leg length (default ±20mm); ② **whether the foot ends can still reach**, combined with the current stride / height / lift / pose. When they can't reach, `ik_solve_2dof` just clamps the distance to the reachable maximum and **silently loses extension** (feet dragging on the ground, dog walking crooked — **no error**), so both checks are enforced. **Order doesn't matter**: whether you lean the pose first and then set the parameters, or the other way around, both are caught.
 >
 > ② is much tighter than ①. At the default stride=70 / height=70 the foot already extends to 78.3mm with only 5.7mm left to the reachable maximum of 84 ⇒ **the CoM can actually shift at most ±11.4mm**, and **body pose \|pitch\| ≤ 3.7°, \|roll\| ≤ 6.2°**. To shift more / lean more, **reduce the stride first**: stride 60 → CoM 15mm passes; stride 40 → pitch up to 8° passes.
 >
