@@ -20,6 +20,7 @@
   - [① 常用运动组合](#-常用运动组合)
   - [③ 站立自平衡 + 惯导读数](#-站立自平衡--惯导读数)
   - [⑥ 持久化参数（NVS 几何 / 重心）](#-持久化参数nvs-几何--重心)
+  - [⑦ 运行时参数（不落盘）](#-运行时参数不落盘掉电回默认-0)
 - [一、运动](#一运动)
   - [1.1 常用运动组合](#11-常用运动组合)
   - [1.2 运动指令 bpuppy_motion](#12-运动指令-bpuppy_motion)
@@ -33,7 +34,7 @@
   - [3.1 摄像头操作 bpuppy_camera](#31-摄像头操作-bpuppy_camera)
 - [四、设置与校准](#四设置与校准)
   - [4.1 舵机校准 bpuppy_servo](#41-舵机校准-bpuppy_servo)
-  - [4.2 持久化参数（★NVS，掉电保留）](#42-持久化参数nvs掉电保留)
+  - [4.2 参数表（持久化 / 运行时）](#42-参数表持久化--运行时)
 - [五、传感器与姿态](#五传感器与姿态)
   - [5.1 IMU 调试 bpuppy_imu](#51-imu-调试-bpuppy_imu)
   - [5.2 IMU 校准（陀螺 + 加速度计）](#52-imu-校准陀螺--加速度计)
@@ -125,11 +126,18 @@ bpuppy_motion.cal_ik(40, 45)                     # 腿长 (L1, L2 mm)
 bpuppy_motion.set_body_dims(62.5, 59)            # 髋距 (前后半距, 左右半宽 mm)
 bpuppy_motion.set_joint_limits(0, 180, 10, 170)  # 限位 (髋min/max, 膝min/max deg)
 bpuppy_motion.set_center(0)                      # 重心偏移 (正=脚前移)；还要跟 stride/height 组合够得着, 默认参数下只到 ±11.4mm
-bpuppy_motion.set_center_spacing(0)              # 中位点间距: 前腿 +s/2、后腿 -s/2 (正=展开)；运行时、不落盘；只在 walk/trot 生效 (GO 不叠加)
-bpuppy_motion.set_sway(0)                        # 相位联动摆动: walk 抬脚瞬间的稳定裕量补偿 (mm)；**默认 0 (关)**，3~7 平滑、>0.0995×步长会"走一步停一下"；运行时、不落盘
+bpuppy_motion.show_geometry()                    # 查看全部
+```
+
+### ⑦ 运行时参数（**不落盘**，掉电回默认 0）
+
+
+```python
+import bpuppy_motion
+bpuppy_motion.set_center_spacing(0)              # 中位点间距: 前腿 +s/2、后腿 -s/2 (正=展开)；只在 walk/trot 生效 (GO 不叠加)
+bpuppy_motion.set_sway(0)                        # 相位联动摆动: walk 抬脚瞬间的稳定裕量补偿 (mm)；默认 0 (关)，3~7 平滑、>0.0995×步长会"走一步停一下"
 bpuppy_motion.get_center()                       # 读回 (中点平移, 间距)
 bpuppy_motion.get_sway()                         # 读回摆动幅值 (mm)
-bpuppy_motion.show_geometry()                    # 查看全部
 ```
 
 
@@ -607,7 +615,9 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 
 > 方向约定（髋 0/90/180 指向、膝左右镜像）见 [AGENTS.md](../AGENTS.md) 的「舵机角度标定」表。
 
-### 4.2 持久化参数（★NVS，掉电保留）
+### 4.2 参数表（持久化 / 运行时）
+
+**持久化（★NVS，掉电保留）：**
 
 | 组 | 调用示例 | 默认值 |
 |----|------|--------|
@@ -616,10 +626,15 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 | 几何 | `bpuppy_motion.set_joint_limits(0, 180, 10, 170)` ★ | 髋 0~180, 膝 10~170 (deg) |
 | 舵机 | `bpuppy_servo.cal(ch, 90)` ★ | 8 路校准参考角 (deg) |
 | 重心 | `bpuppy_motion.set_center(0)` ★ | 中位点**中点**前后平移 (mm)，正=前移，前后腿一起挪，**两道闸门**：① ≤ 大腿长/2（默认 ±20）② 跟当前 stride/height 组合够得着 —— 默认参数下 ② 更紧，实际只到 **±11.4mm** |
-| 重心 | `bpuppy_motion.set_center_spacing(0)` | 中位点**间距** (mm)：前腿 +s/2、后腿 −s/2，正=展开、负=收窄。低站高时展开可配平髋/膝余量（S=70/H=45 展开到 66 → 髋余量 0.4°→23.6°）；闸门同 set_center 两道。读回 `get_center()`。⚠ **不写 NVS、掉电清零**（运行时参数）；**只在 walk/trot 生效，GO 不叠加** |
-| 重心 | `bpuppy_motion.set_sway(0)` | 相位联动**摆动** (mm)：walk 抬脚/落地四个瞬间的稳定裕量补偿（那时重心离支撑边只有 ~2mm，但摆动腿还贴地——真实最低裕量在别处，约 4.6mm）。**默认 0（关）**，按需开：**3~7 平滑**（有效最低裕量 4.6→~7.5mm）；**> 0.0995×步长**（S70 → 7mm）机身会"走一步停一下"—— 走速本身就是摆动的速度尺子，改不了。闸门同 set_center 两道。读回 `get_sway()`。⚠ 不写 NVS、掉电清零；只在 walk 族生效（trot / GO 高速段自动归零）|
 
-> 以上参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**例外**：`set_center_spacing` 和 `set_sway` 是运行时参数，不落盘。
+**运行时（不落盘，掉电回默认 0）：**
+
+| 组 | 调用示例 | 默认值 |
+|----|------|--------|
+| 重心 | `bpuppy_motion.set_center_spacing(0)` | 中位点**间距** (mm)：前腿 +s/2、后腿 −s/2，正=展开、负=收窄。低站高时展开可配平髋/膝余量（S=70/H=45 展开到 66 → 髋余量 0.4°→23.6°）；闸门同 set_center 两道。读回 `get_center()`。**只在 walk/trot 生效，GO 不叠加** |
+| 重心 | `bpuppy_motion.set_sway(0)` | 相位联动**摆动** (mm)：walk 抬脚/落地四个瞬间的稳定裕量补偿（那时重心离支撑边只有 ~2mm，但摆动腿还贴地——真实最低裕量在别处，约 4.6mm）。**默认 0（关）**，按需开：**3~7 平滑**（有效最低裕量 4.6→~7.5mm）；**> 0.0995×步长**（S70 → 7mm）机身会"走一步停一下"—— 走速本身就是摆动的速度尺子，改不了。闸门同 set_center 两道。读回 `get_sway()`。只在 walk 族生效（trot / GO 高速段自动归零）|
+
+> **持久化表**里的参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**运行时表**（`set_center_spacing` / `set_sway`）**完全不碰 flash**，掉电回默认 0。
 >
 > `show_geometry()` 打印几何参数 + 各路舵机的 **90° 点**校准值，**不显示 0°/180° 点** —— 那两点要用 `bpuppy_servo.get_cal_point(ch, 0/2)` 单独读。
 >
