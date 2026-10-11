@@ -61,6 +61,29 @@ bpuppy_motion.set_gait("walk")
 
 ## 一、运动
 
+系统有**三种运行模式**，由 C 层状态机自动切换，**无需手动操作**：
+
+| 模式 | 值 | 说明 |
+|------|-----|------|
+| IDLE | 0 | 上电未初始化（短暂） |
+| POSE | 1 | 姿态模式，Python 接管舵机（蹲/坐/站立/自定义） |
+| MOTION | 2 | 运动模式，C 层 50Hz 控制（go/walk/trot/stop） |
+
+**自动切换规则：**
+- **进 POSE**：Python 写舵机（`poses.sit()/set_angle`/`group_commit`/`cal`）→ 自动切姿态模式
+- **进 MOTION**：`set_gait('go'/'walk'/'trot'/'stop')` → 自动切运动模式
+- 查询当前模式：`bpuppy_motion.get_mode()`
+
+**停止（GAIT_STOP）vs 站立（POSE_STAND）：**
+
+
+| | `set_gait('stop')` | `poses.stand()` |
+|---|---|---|
+| 模式 | MOTION | POSE |
+| 控制器 | C 层 IK | Python IK |
+| 高度 | 随 `set_params` 高度 | 固定 70mm |
+| 用途 | 停止站好 | 姿态区站立 |
+
 ### 1.1 姿态设置（poses）
 
 `poses` 的几个姿态动作会**自动切到姿态模式 (POSE)** —— Python 直接写舵机（模式切换见 [§1.2.1](#121-运行模式自动切换)）。全部是固定角度 / 固定高度。
@@ -161,27 +184,7 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 
 ### 1.2.1 运行模式（自动切换）
 
-系统有**三种运行模式**，由 C 层状态机自动切换，**无需手动操作**：
 
-| 模式 | 值 | 说明 |
-|------|-----|------|
-| IDLE | 0 | 上电未初始化（短暂） |
-| POSE | 1 | 姿态模式，Python 接管舵机（蹲/坐/站立/自定义） |
-| MOTION | 2 | 运动模式，C 层 50Hz 控制（go/walk/trot/stop） |
-
-**自动切换规则：**
-- **进 MOTION**：`set_gait('go'/'walk'/'trot'/'stop')` → 自动切运动模式
-- **进 POSE**：Python 写舵机（`set_angle`/`group_commit`/`cal`）→ 自动切姿态模式
-- 查询当前模式：`bpuppy_motion.get_mode()`
-
-**停止（GAIT_STOP）vs 站立（POSE_STAND）：**
-
-| | `set_gait('stop')` | `poses.stand()` |
-|---|---|---|
-| 模式 | MOTION | POSE |
-| 控制器 | C 层 IK | Python IK |
-| 高度 | 随 `set_params` 高度 | 固定 70mm |
-| 用途 | 停止站好 | 姿态区站立 |
 
 ### 1.2.2 参数校验（超限拒绝）
 
@@ -467,12 +470,19 @@ bpuppy_camera.init_adv(bpuppy_camera.SVGA, 10, 2, 20000000, bpuppy_camera.JPEG)
 | `bpuppy_servo.init_all()` | 按硬件映射初始化全部 8 路舵机 |
 | `bpuppy_servo.set_angle(0, 90)` | (通道, 角度) 设置舵机角度 (当前映射 -35~215) |
 | `bpuppy_servo.get_angle(0)` | (通道) 返回当前角度 (float) |
+| `bpuppy_servo.group_begin()` | **批量同步写**① 开一批 (清空列表) |
+| `bpuppy_servo.group_add(0, 90)` | ② (通道, 角度) 入列 —— **只记账, 舵机不动**；可连加多路 |
+| `bpuppy_servo.group_commit()` | ③ 一次性把整批**同时**写下去；顺带切 POSE 模式 |
 | `bpuppy_servo.stop()` | 紧急停止所有舵机 (关闭 PWM) |
 | `bpuppy_servo.cal_point(0, 0, 3)` ★ | (通道, 点, 参考角) **三点校准**: 点 0/1/2 = 0°/90°/180° |
 | `bpuppy_servo.get_cal_point(0, 1)` | (通道, 点) 读取指定点校准参考角 |
 | `bpuppy_servo.cal(0, 90)` | (通道, 参考角) 兼容旧接口 = 只标 90° 点 |
 | `bpuppy_servo.get_cal(0)` | (通道) 读取 90° 点校准参考角 |
 | `bpuppy_servo.load_cal()` ★ | 从 NVS 加载校准值 (开机自动调用) |
+
+> **`group_begin/add/commit` 是「批量同步写」**：`set_angle` 是一路一路写的，多路快速动作会看出错落；
+> 批量三件套先把角度记账、`commit` 时**一次性同时提交**。运动任务每帧就是这么驱动 8 路舵机的
+> （所以步态动作整体一致）。`group_add` 会**跳过未初始化的通道**（不报错），角度同样走校准表。
 
 **三点校准说明（★推荐）:**
 

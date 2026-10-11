@@ -486,12 +486,19 @@ bpuppy_camera.init_adv(bpuppy_camera.SVGA, 10, 2, 20000000, bpuppy_camera.JPEG)
 | `bpuppy_servo.init_all()` | Initialize all 8 servos per the hardware mapping |
 | `bpuppy_servo.set_angle(0, 90)` | (channel, angle) set a servo angle (current mapping -35~215) |
 | `bpuppy_servo.get_angle(0)` | (channel) return the current angle (float) |
+| `bpuppy_servo.group_begin()` | **Batch synchronized write** ① open a batch (clears the list) |
+| `bpuppy_servo.group_add(0, 90)` | ② (channel, angle) enqueue — **bookkeeping only, no servo moves**; add several in a row |
+| `bpuppy_servo.group_commit()` | ③ write the whole batch **at once (synchronized)**; also switches to POSE mode |
 | `bpuppy_servo.stop()` | Emergency-stop all servos (PWM off) |
 | `bpuppy_servo.cal_point(0, 0, 3)` ★ | (channel, point, reference angle) **three-point calibration**: point 0/1/2 = 0°/90°/180° |
 | `bpuppy_servo.get_cal_point(0, 1)` | (channel, point) read the calibration reference angle of a point |
 | `bpuppy_servo.cal(0, 90)` | (channel, reference angle) legacy-compatible = calibrates only the 90° point |
 | `bpuppy_servo.get_cal(0)` | (channel) read the 90° point's calibration reference angle |
 | `bpuppy_servo.load_cal()` ★ | Load calibration from NVS (called automatically at boot) |
+
+> **`group_begin/add/commit` is the "batch synchronized write"**: `set_angle` writes one channel at a time, so fast multi-servo moves visibly stagger;
+> the trio records the angles first and `commit` writes them **all at once**. The motion task drives all 8 servos this way every frame
+> (which is why gait moves stay coherent). `group_add` **skips uninitialized channels** (no error), and angles go through the calibration table just like `set_angle`.
 
 **Three-point calibration (★recommended):**
 
