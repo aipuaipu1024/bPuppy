@@ -45,9 +45,6 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
 
 ## 0. Quick Reference
 
-Every snippet can be **copied and run on its own** (all imports are included). At power-on the dog stands by in the standing pose (POSE mode).
-**How to paste**: single-line snippets go straight into the REPL; for **multi-line blocks with indentation** (loops etc.), press `Ctrl-E` first to enter **paste mode** → paste → `Ctrl-D` to run (pasting line by line gets stuck at the `...` continuation prompt).
-
 
 ### Getting Started (Common Motion Presets)
 
