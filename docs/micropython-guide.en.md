@@ -17,10 +17,7 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
 ## Contents
 
 - [0. Quick Reference](#0-quick-reference)
-  - [1. Common Motion Presets](#1-common-motion-presets)
-  - [3. Stand-up Self-Balancing + IMU Readings](#3-stand-up-self-balancing--imu-readings)
-  - [6. Persistent Parameters (NVS Geometry / Center of Mass)](#6-persistent-parameters-nvs-geometry--center-of-mass)
-  - [7. Runtime-Only Parameters (not saved)](#7-runtime-only-parameters-not-saved)
+  - [Getting Started (Common Motion Presets)](#getting-started-common-motion-presets)
 - [1. Motion](#1-motion)
   - [1.1 Common Motion Presets](#11-common-motion-presets)
   - [1.2 Motion Commands — bpuppy_motion](#12-motion-commands--bpuppy_motion)
@@ -49,10 +46,12 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
 ## 0. Quick Reference
 
 Every snippet can be **copied and run on its own** (all imports are included). At power-on the dog stands by in the standing pose (POSE mode).
+**How to paste**: single-line snippets go straight into the REPL; for **multi-line blocks with indentation** (loops etc.), press `Ctrl-E` first to enter **paste mode** → paste → `Ctrl-D` to run (pasting line by line gets stuck at the `...` continuation prompt).
 
 
-### 1. Common Motion Presets
+### Getting Started (Common Motion Presets)
 
+> Paste the **whole set** of one of the three (pick one) — pasting all of them runs them in order and the last set wins.
 
 ```python
 import bpuppy_motion
@@ -77,74 +76,16 @@ bpuppy_motion.set_gait("walk")
 > Speed is the **step frequency** and has nothing to do with the leg trajectory, so it has its own `set_speed(0~10)` you can change at any time without touching stride/lift/height. It also returns `True`/`False`.
 
 
-### 3. Stand-up Self-Balancing + IMU Readings
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # 1. Initialize the IMU first (AHRS needs to converge; may need retrying right after power-on)
-
-import time
-time.sleep_ms(2000)                        # 2. Wait for the attitude to stabilize (AHRS convergence)
-
-import balance
-balance.start()                      # 3. Pick one of the three (auto emergency stop)
-# balance.start(kp=0.06, ki=0.001, kd=0.5)       # Custom PID
-balance.stop()                       # Stop; restores the motion task
-```
-
-**Helper · Loop-print inertial data:**
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # Initialize (idempotent)
-import time
-for i in range(20):
-    r, p, y = bpuppy_imu.read_angles()
-    print('roll=%.2f pitch=%.2f yaw=%.2f' % (r, p, y))
-    time.sleep_ms(500)
-```
-
-**Helper · Magnetometer data output:**
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # Initialize (idempotent)
-import time
-while True:
-    a, g, m, t = bpuppy_imu.read_raw()
-    print('mag=%.3f %.3f %.3f uT' % (m[0], m[1], m[2]))
-    time.sleep_ms(200)
-```
-
-### 6. Persistent Parameters (NVS Geometry / Center of Mass)
-
-
-```python
-import bpuppy_motion
-bpuppy_motion.cal_ik(40, 45)                     # Leg lengths (L1, L2 mm)
-bpuppy_motion.set_body_dims(62.5, 59)            # Hip spacing (front/rear half-spacing, left/right half-width mm)
-bpuppy_motion.set_joint_limits(0, 180, 10, 170)  # Joint limits (hip min/max, knee min/max deg)
-bpuppy_motion.set_center(0)                      # CoM offset (positive = feet forward); must also stay reachable combined with stride/height — only ±11.4mm at default parameters
-bpuppy_motion.show_geometry()                    # Show everything
-```
-
-### 7. Runtime-Only Parameters (**not saved**, reset to 0 on power-off)
-
-
-```python
-import bpuppy_motion
-bpuppy_motion.set_center_spacing(0)              # Neutral-point spacing: front +s/2, rear -s/2 (positive = spread); walk/trot only (not applied in GO)
-bpuppy_motion.set_sway(0)                        # Phase-locked sway: stability margin at walk lift/land instants (mm); default 0 (off), 3~7 is smooth, > 0.0995×stride makes the body "pause every step"
-bpuppy_motion.get_center()                       # Read back (center offset, spacing)
-bpuppy_motion.get_sway()                         # Read back the sway amplitude (mm)
-```
+> Stand-up self-balancing → [§1.3](#13-stand-up-self-balancing--balance);
+> inertial readings / magnetometer output → [§5.1](#51-imu-debugging--bpuppy_imu);
+> geometry / CoM parameters (persistent + runtime-only) → [§4.2](#42-parameter-tables-persistent--runtime-only).
 
 
 ## 1. Motion
 
 ### 1.1 Common Motion Presets
 
-Three configurations measured as optimal (full code in Quick Reference 1 above — copy and run):
+Three configurations measured as optimal (full code in the Quick Reference above — copy and run):
 
 | Preset | speed | stride | height | lift | gait |
 |------|-------|--------|--------|------|------|
@@ -198,11 +139,14 @@ Three configurations measured as optimal (full code in Quick Reference 1 above �
 | walk | 2.5 | 70 | 70 | 30 | pitch=-5 | walk; stable and quiet |
 | trot | 8~8.5 | 50~70 | 70 | 30 | pitch=-3 | trot; fastest |
 
-> When lowering the standing height (height<70) you must reduce the lift: height=60 → lift≤20, height=50 → lift≤10, otherwise the hip angle exceeds its limit and the parameter validation rejects it.
+> ⚠ **The walk row's pitch=-5 is rejected by the combined check at stride=70 in the current firmware** (default limit |pitch| ≈ 3.7°): for -5° either reduce stride to **≈60 or less**, or set pitch to -3°.
+
+> When lowering the standing height (height<70) you must reduce the lift: **height=60 → lift≲25, height=50 → lift≲13** (the combined check's actual limits are ≈29.7 / 15.6), otherwise the hip angle exceeds its limit and the parameter validation rejects it.
 
 **Whichever gait you use, it's always the same four things before moving:**
 
 ```python
+import bpuppy_motion
 bpuppy_motion.set_gait("go")             # 1. Choose the gait
 bpuppy_motion.set_direction(1)           # 2. Set the direction (+1 forward / -1 backward; defaults to +1 at power-on)
 bpuppy_motion.set_speed(2.5)             # 3. Set the step frequency 0~10
@@ -346,12 +290,15 @@ IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
 
 ```python
 import bpuppy_uart
-bpuppy_uart.init(2, 19, 20, 115200)   # UART2, TX=19, RX=20
+bpuppy_uart.init(2, 19, 20, 9600)     # UART2, TX=19, RX=20 (9600 matches the on-board voice module; micro:bit often uses 115200)
 bpuppy_uart.send(b"hello")            # Send bytes
 bpuppy_uart.sendline("AT")            # Send a string + newline
 data = bpuppy_uart.read(64)           # Read bytes (non-blocking)
 n = bpuppy_uart.any()                 # Bytes available in the buffer
 ```
+
+> ⚠ Changing the baud rate changes **the UART2 link itself** (the on-board voice module runs at 9600) — to restore voice:
+> `import voice; voice.stop(); voice.start()`.
 
 **UART1 (camera-shared port)** — GPIO 4=TX, 5=RX; **shares pins with the camera SCCB SDA/SCL — usable when not taking photos**.
 
@@ -366,7 +313,7 @@ n = bpuppy_uart.u1_any()
 
 | Call example | Description |
 |------|------|
-| `bpuppy_uart.init(2, 19, 20, 115200)` | Initialize UART2 (num, tx, rx, baud) |
+| `bpuppy_uart.init(2, 19, 20, 9600)` | Initialize UART2 (num, tx, rx, baud) |
 | `bpuppy_uart.send(b"hello")` | Send bytes or str |
 | `bpuppy_uart.read(64)` | Read up to 64 bytes (non-blocking) |
 | `bpuppy_uart.any()` | Number of readable bytes in the buffer |
@@ -438,7 +385,7 @@ voice.play('汪汪')      # Play a preset sound (woof/whimper; mapping in voice.
 voice.say(0x70, 1)      # Send bark sound #1 = woof woof (AA 55 70 01 55 AA)
 voice.say(0x70, 2)      # Send bark sound #2 = whimper (AA 55 70 02 55 AA)
 voice.SoundAngle        # Last sound-source angle (deg, 0-180); -1 = none received since boot
-voice.on_cmd(0x30, fn)  # Register a callback: fn runs when the stop command is received
+voice.on_cmd(0x30, lambda: print("stop command received"))   # Register a callback
 voice.stop()            # Stop the background polling
 ```
 
@@ -600,6 +547,7 @@ Each channel stores, at the three points **0°/90°/180°**, "the angle the serv
 **Calibration procedure** (three points per servo; `cal_point` does it in one step: writes NVS + turns the servo to the raw angle on the spot):
 
 ```python
+import bpuppy_servo
 bpuppy_servo.cal_point(0, 0,   3)   # 1. try 3   → check whether the leg is at the ideal 0° position → if not, try another number and resend
 bpuppy_servo.cal_point(0, 1,  95)   # 2. try 95  → leg vertical (90° position)
 bpuppy_servo.cal_point(0, 2, 178)   # 3. try 178 → leg at the ideal 180° position
@@ -656,6 +604,8 @@ Every call writes NVS once, so **the last value you settle on is the final one**
 **Magnetometer fusion switch `set_mag_fusion`:**
 
 ```python
+import bpuppy_imu
+bpuppy_imu.init(0, 14, 21, 0x68)   # idempotent
 bpuppy_imu.set_mag_fusion(False)   # Magnetometer corrects yaw only, not involved in roll/pitch
 bpuppy_imu.set_mag_fusion(True)    # Full 9-axis fusion (default)
 ```
@@ -665,6 +615,7 @@ bpuppy_imu.set_mag_fusion(True)    # Full 9-axis fusion (default)
 **View raw data (accelerometer / gyro / magnetometer / temperature):**
 
 ```python
+# Multi-line block: Ctrl-E for paste mode → paste → Ctrl-D to run
 import bpuppy_imu
 bpuppy_imu.init(0, 14, 21, 0x68)      # Initialize (idempotent)
 import time
@@ -678,6 +629,7 @@ while True:
 **View attitude angles (roll, pitch, yaw):**
 
 ```python
+# Multi-line block: Ctrl-E for paste mode → paste → Ctrl-D to run
 import bpuppy_imu
 bpuppy_imu.init(0, 14, 21, 0x68)      # Initialize (idempotent)
 import time
@@ -691,7 +643,9 @@ while True:
 ### 5.2 IMU Calibration (gyro + accelerometer)
 
 ```python
-bpuppy_imu.calibrate(300)     # Hold still for about 5 seconds; the result is saved to NVS automatically and persists across power-off
+import bpuppy_imu
+bpuppy_imu.init(0, 14, 21, 0x68)   # idempotent; calibration needs the IMU running
+bpuppy_imu.calibrate(300)          # Hold still for about 5 seconds; the result is saved to NVS automatically and persists across power-off
 ```
 
 ⚠ **The body must be level during calibration.** When you need it and what happens if you don't → the calibration section of [getting-started.en.md](getting-started.en.md).
@@ -747,6 +701,7 @@ anc.off()       # Off: stop the loop + release steering
 Tuning — **everything has defaults; it runs without tuning**:
 
 ```python
+import heading_anchor as anc
 anc.cfg                    # Show current parameters
 anc.set(kp=2.5)            # Change one (takes effect immediately while locked; target unchanged)
 anc.set()                  # No arguments = restore all defaults
@@ -802,8 +757,7 @@ print(voltage.read_pct())     # 0-100; 0 (not -1) if monitoring isn't running / 
 
 ```python
 import bpuppy_adc
-bpuppy_adc.init()                      # Initialize (V3.0: ADC1_CH2 GPIO3)
-                                       #   ↳ also activates the GPIO48 WS2812 battery indicator
+bpuppy_adc.init()                      # Initialize (V3.0: ADC1_CH2 GPIO3; also activates the GPIO48 WS2812 battery indicator)
 mv = bpuppy_adc.read_mv()              # ADC pin voltage (mV, after the divider)
 batt_v = mv * 6.1 / 1000               # Uncalibrated battery voltage (V), converted for the 51k/10k divider
 ```
@@ -826,6 +780,9 @@ The main board reserves 3 extension servo outputs (for the 9th servo and beyond)
 Unified numbering: `0`~`7` = main servos, `8`/`9`/`10` = **PWM_EXT1/2/3**.
 
 ```python
+import pwm_ext
+pwm_ext.on(2)                 # Enable PWM_EXT2 first (reads/writes error on a disabled channel; for auto-enable at boot see 2.2)
+
 import poses
 poses.set_servo(9, 90)        # 9 = PWM_EXT2 (writes the buffer only, no movement)
 poses.set_step(3)             # Transition speed in °/frame (default 3.0 = 150°/s)

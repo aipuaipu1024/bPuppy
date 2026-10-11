@@ -17,10 +17,7 @@
 ## 目录
 
 - [〇、速查](#〇速查)
-  - [① 常用运动组合](#-常用运动组合)
-  - [③ 站立自平衡 + 惯导读数](#-站立自平衡--惯导读数)
-  - [⑥ 持久化参数（NVS 几何 / 重心）](#-持久化参数nvs-几何--重心)
-  - [⑦ 运行时参数（不落盘）](#-运行时参数不落盘掉电回默认-0)
+  - [快速上手（常用运动组合）](#快速上手常用运动组合)
 - [一、运动](#一运动)
   - [1.1 常用运动组合](#11-常用运动组合)
   - [1.2 运动指令 bpuppy_motion](#12-运动指令-bpuppy_motion)
@@ -49,10 +46,12 @@
 ## 〇、速查
 
 每块都能**独立拷贝就跑**（已含全部 import）。上电默认站姿待命（POSE 模式）。
+**粘贴方式**：单行片段直接粘进 REPL；**带缩进的多行块**（循环等）要先 `Ctrl-E` 进**粘贴模式** → 粘贴 → `Ctrl-D` 执行（逐行粘会卡在 `...` 续行里）。
 
 
-### ① 常用运动组合
+### 快速上手（常用运动组合）
 
+> 三套写法的**整套**贴（三选一）—— 整块粘会依次执行、最后一套生效。
 
 ```python
 import bpuppy_motion
@@ -78,74 +77,16 @@ bpuppy_motion.set_gait("walk")
 > 不动步长/抬腿/身高。同样返回 `True`/`False`。
 
 
-### ③ 站立自平衡 + 惯导读数
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # ① 先初始化 IMU (AHRS 需先收敛, 上电初期可能需重试)
-
-import time
-time.sleep_ms(2000)                        # ② 等姿态稳定 (AHRS 收敛)
-
-import balance
-balance.start()                      # ③ 三选一 (自动急停)
-# balance.start(kp=0.06, ki=0.001, kd=0.5)       # 自定义 PID
-balance.stop()                       # 停止, 恢复运动任务
-```
-
-**辅助 · 循环输出惯导数据:**
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # 初始化 (幂等)
-import time
-for i in range(20):
-    r, p, y = bpuppy_imu.read_angles()
-    print('roll=%.2f pitch=%.2f yaw=%.2f' % (r, p, y))
-    time.sleep_ms(500)
-```
-
-**辅助 · 磁力计数据输出:**
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # 初始化 (幂等)
-import time
-while True:
-    a, g, m, t = bpuppy_imu.read_raw()
-    print('mag=%.3f %.3f %.3f uT' % (m[0], m[1], m[2]))
-    time.sleep_ms(200)
-```
-
-### ⑥ 持久化参数（NVS 几何 / 重心）
-
-
-```python
-import bpuppy_motion
-bpuppy_motion.cal_ik(40, 45)                     # 腿长 (L1, L2 mm)
-bpuppy_motion.set_body_dims(62.5, 59)            # 髋距 (前后半距, 左右半宽 mm)
-bpuppy_motion.set_joint_limits(0, 180, 10, 170)  # 限位 (髋min/max, 膝min/max deg)
-bpuppy_motion.set_center(0)                      # 重心偏移 (正=脚前移)；还要跟 stride/height 组合够得着, 默认参数下只到 ±11.4mm
-bpuppy_motion.show_geometry()                    # 查看全部
-```
-
-### ⑦ 运行时参数（**不落盘**，掉电回默认 0）
-
-
-```python
-import bpuppy_motion
-bpuppy_motion.set_center_spacing(0)              # 中位点间距: 前腿 +s/2、后腿 -s/2 (正=展开)；只在 walk/trot 生效 (GO 不叠加)
-bpuppy_motion.set_sway(0)                        # 相位联动摆动: walk 抬脚瞬间的稳定裕量补偿 (mm)；默认 0 (关)，3~7 平滑、>0.0995×步长会"走一步停一下"
-bpuppy_motion.get_center()                       # 读回 (中点平移, 间距)
-bpuppy_motion.get_sway()                         # 读回摆动幅值 (mm)
-```
+> 站立自平衡 → [§1.3](#13-站立自平衡-balance)；
+> 惯导读数 / 磁力计输出 → [§5.1](#51-imu-调试-bpuppy_imu)；
+> 几何 / 重心参数（持久化 + 运行时）→ [§4.2](#42-参数表持久化--运行时)。
 
 
 ## 一、运动
 
 ### 1.1 常用运动组合
 
-三个实测最优方案（完整代码见上面的速查①，拷过来就能跑）：
+三个实测最优方案（完整代码见上面的「速查」，拷过来就能跑）：
 
 | 方案 | speed | stride | height | lift | gait |
 |------|-------|--------|--------|------|------|
@@ -200,11 +141,16 @@ bpuppy_motion.get_sway()                         # 读回摆动幅值 (mm)
 | walk | 2.5 | 70 | 70 | 30 | pitch=-5 | 猫步, 稳而安静 |
 | trot | 8~8.5 | 50~70 | 70 | 30 | pitch=-3 | 小跑, 最快 |
 
-> 降低身高 (height<70) 时需减小抬腿 (lift): height=60 → lift≤20, height=50 → lift≤10, 否则髋角超限被参数校验拒绝。
+> ⚠ **walk 行的 pitch=-5 在当前固件下 stride=70 时会被组合校验拒**（默认允许 |俯仰| ≈3.7°）：
+> 想要 -5° 得把 stride 降到 **≈60 以下**，或者俯仰收到 -3°。
+
+> 降低身高 (height<70) 时需减小抬腿 (lift): **height=60 → lift≲25, height=50 → lift≲13**
+> （固件组合校验的实限约 29.7 / 15.6），再大就被拒（髋角超限）。
 
 **不管哪种步态，起步前都是同样四件事：**
 
 ```python
+import bpuppy_motion
 bpuppy_motion.set_gait("go")             # ① 选步态
 bpuppy_motion.set_direction(1)           # ② 定方向 (+1 前 / -1 后, 上电默认 +1)
 bpuppy_motion.set_speed(2.5)             # ③ 定步频 0~10
@@ -352,12 +298,15 @@ IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
 
 ```python
 import bpuppy_uart
-bpuppy_uart.init(2, 19, 20, 115200)   # UART2, TX=19, RX=20
+bpuppy_uart.init(2, 19, 20, 9600)     # UART2, TX=19, RX=20（9600 对齐板载语音模块; micro:bit 常改 115200）
 bpuppy_uart.send(b"hello")            # 发送 bytes
 bpuppy_uart.sendline("AT")            # 发送字符串+换行
 data = bpuppy_uart.read(64)           # 读取 bytes (非阻塞)
 n = bpuppy_uart.any()                 # 缓冲字节数
 ```
+
+> ⚠ 改了波特率就改了 **UART2 这条链路本身**（板载语音模块跑 9600）—— 想恢复语音：
+> `import voice; voice.stop(); voice.start()`。
 
 **UART1 (摄像头复用口)** — GPIO 4=TX, 5=RX，**与摄像头 SCCB SDA/SCL 共享引脚，不拍照时可用**。
 
@@ -372,7 +321,7 @@ n = bpuppy_uart.u1_any()
 
 | 调用示例 | 说明 |
 |------|------|
-| `bpuppy_uart.init(2, 19, 20, 115200)` | 初始化 UART2 (num, tx, rx, baud) |
+| `bpuppy_uart.init(2, 19, 20, 9600)` | 初始化 UART2 (num, tx, rx, baud) |
 | `bpuppy_uart.send(b"hello")` | 发送 bytes 或 str |
 | `bpuppy_uart.read(64)` | 读取最多 64 字节 (非阻塞) |
 | `bpuppy_uart.any()` | 缓冲中可读字节数 |
@@ -444,8 +393,8 @@ voice.play('汪汪')      # 播放预置声音（汪汪/嘤嘤, 映射见 voice.
 voice.say(0x70, 1)      # 发狗叫声 1 号 = 汪汪 (AA 55 70 01 55 AA)
 voice.say(0x70, 2)      # 发狗叫声 2 号 = 嘤嘤 (AA 55 70 02 55 AA)
 voice.SoundAngle        # 最近一次声源角度（度, 0-180）; -1 = 开机后还没收到过
-voice.on_cmd(0x30, fn)  # 注册回调: 收到停止指令时执行 fn
-voice.stop()            # 停止后台轮询
+voice.on_cmd(0x30, lambda: print("收到停止指令"))   # 注册回调: 收到停止指令时执行
+voice.stop()            # 停止后台轮询; 重新开: voice.start()
 ```
 
 > ⚠ **只转发事件、不做动作**：固件收到语音指令**只打印 + 触发事件回调**（KittenBlock 事件积木），动作全由用户在 KittenBlock 里编程。
@@ -606,6 +555,7 @@ bpuppy_camera.init_adv(bpuppy_camera.SVGA, 10, 2, 20000000, bpuppy_camera.JPEG)
 **标定流程**（每个舵机三点；`cal_point` 一步到位：写 NVS + 当场按原始角度转舵机）:
 
 ```python
+import bpuppy_servo
 bpuppy_servo.cal_point(0, 0,   3)   # ① 试 3   → 看腿是否在 0° 理想位 → 不对就换数重发
 bpuppy_servo.cal_point(0, 1,  95)   # ② 试 95  → 腿垂直 (90° 位)
 bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
@@ -664,6 +614,8 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 **磁力计融合开关 `set_mag_fusion`:**
 
 ```python
+import bpuppy_imu
+bpuppy_imu.init(0, 14, 21, 0x68)   # 幂等
 bpuppy_imu.set_mag_fusion(False)   # 磁力计只修 yaw, 不参与 roll/pitch
 bpuppy_imu.set_mag_fusion(True)    # 9轴完整融合 (默认)
 ```
@@ -673,6 +625,7 @@ bpuppy_imu.set_mag_fusion(True)    # 9轴完整融合 (默认)
 **查看原始数据 (加速度/陀螺/磁力计/温度):**
 
 ```python
+# 多行块：Ctrl-E 进粘贴模式 → 粘贴 → Ctrl-D 执行
 import bpuppy_imu
 bpuppy_imu.init(0, 14, 21, 0x68)      # 初始化 (幂等)
 import time
@@ -686,6 +639,7 @@ while True:
 **查看姿态角 (roll, pitch, yaw):**
 
 ```python
+# 多行块：Ctrl-E 进粘贴模式 → 粘贴 → Ctrl-D 执行
 import bpuppy_imu
 bpuppy_imu.init(0, 14, 21, 0x68)      # 初始化 (幂等)
 import time
@@ -699,7 +653,9 @@ while True:
 ### 5.2 IMU 校准（陀螺 + 加速度计）
 
 ```python
-bpuppy_imu.calibrate(300)     # 拿住不放约 5 秒; 校准完自动存 NVS, 掉电保留
+import bpuppy_imu
+bpuppy_imu.init(0, 14, 21, 0x68)   # 幂等; 校准需 IMU 在跑
+bpuppy_imu.calibrate(300)          # 拿住不放约 5 秒; 校准完自动存 NVS, 掉电保留
 ```
 
 ⚠ **校准时机身必须水平**。什么时候需要、不校会怎样 → [新板上电操作指南.md](新板上电操作指南.md) 的标定节。
@@ -754,6 +710,7 @@ anc.off()       # 关闭：停闭环 + 松转向
 调参 —— **全都有缺省，不调也能跑**：
 
 ```python
+import heading_anchor as anc
 anc.cfg                    # 看当前参数
 anc.set(kp=2.5)            # 改一个（已锁定时立即生效，目标不变）
 anc.set()                  # 无参 = 全部恢复缺省
@@ -808,8 +765,7 @@ print(voltage.read_pct())     # 0-100; 监控未跑/ADC 未就绪 → 0 (不是 
 
 ```python
 import bpuppy_adc
-bpuppy_adc.init()                      # 初始化 (V3.0: ADC1_CH2 GPIO3)
-                                       #   ↳ 同时激活 GPIO48 WS2812 电池指示灯
+bpuppy_adc.init()                      # 初始化 (V3.0: ADC1_CH2 GPIO3; 同时激活 GPIO48 WS2812 电池指示灯)
 mv = bpuppy_adc.read_mv()              # ADC 引脚电压 (mV, 分压后)
 batt_v = mv * 6.1 / 1000               # 未标定电池电压 (V), 51k/10k 分压换算
 ```
@@ -832,6 +788,9 @@ batt_v = mv * 6.1 / 1000               # 未标定电池电压 (V), 51k/10k 分�
 统一编号：`0`~`7` = 主舵机，`8`/`9`/`10` = **PWM_EXT1/2/3**。
 
 ```python
+import pwm_ext
+pwm_ext.on(2)                 # 先启用 PWM_EXT2（未启用读写会报错; 开机自动启用见 2.2）
+
 import poses
 poses.set_servo(9, 90)        # 9 = PWM_EXT2 (只写缓冲, 不动)
 poses.set_step(3)             # 过渡速度 °/帧 (默认 3.0 = 150°/s)
