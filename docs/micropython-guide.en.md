@@ -48,8 +48,6 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
 
 ### Getting Started (Common Motion Presets)
 
-> Paste the **whole set** of one of the three (pick one) — pasting all of them runs them in order and the last set wins.
-
 ```python
 import bpuppy_motion
 # Fastest
