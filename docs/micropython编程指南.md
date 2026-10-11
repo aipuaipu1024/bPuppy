@@ -15,7 +15,7 @@
     - [1.2.2 参数校验（超限拒绝）](#122-参数校验超限拒绝)
 - [二、串口通信与语音功能](#二串口通信与语音功能)
   - [2.1 与语音模块通信](#21-与语音模块通信)
-  - [2.2 外部扩展串口（UART1）](#22-外部扩展串口uart1)
+  - [2.2 串口通信（bpuppy_uart）](#22-串口通信bpuppy_uart)
   - [2.3 上电开关文件](#23-上电开关文件)
 - [三、视觉](#三视觉)
   - [3.1 摄像头操作 bpuppy_camera](#31-摄像头操作-bpuppy_camera)
@@ -187,29 +187,6 @@ UART1：外部扩展串口，与摄像头复用管脚。
 
 CI-33T 语音模块接在 **UART2**（GPIO 19=TX, 20=RX），上电由 `voice` 自动启动、9600 波特率。详见 [硬件连接.md](../PCB/硬件连接.md) UART2 节。
 
-**UART2 底层 API**（自己往外发数据用）:
-
-```python
-import bpuppy_uart
-bpuppy_uart.init(2, 19, 20, 9600)     # UART2, TX=19, RX=20（9600 对齐板载语音模块; micro:bit 常改 115200）
-bpuppy_uart.send(b"hello")            # 发送 bytes
-bpuppy_uart.sendline("AT")            # 发送字符串+换行
-data = bpuppy_uart.read(64)           # 读取 bytes (非阻塞)
-n = bpuppy_uart.any()                 # 缓冲字节数
-```
-
-| 调用示例 | 说明 |
-|------|------|
-| `bpuppy_uart.init(2, 19, 20, 9600)` | 初始化 UART2 (num, tx, rx, baud) |
-| `bpuppy_uart.send(b"hello")` | 发送 bytes 或 str |
-| `bpuppy_uart.read(64)` | 读取最多 64 字节 (非阻塞) |
-| `bpuppy_uart.any()` | 缓冲中可读字节数 |
-| `bpuppy_uart.sendline("AT")` | 发送字符串 + CRLF |
-| `bpuppy_uart.stop()` | 停止 UART2 (释放外设, 可重新 init) |
-
-> ⚠ 改了波特率就改了 **UART2 这条链路本身**（板载语音模块跑 9600）—— 想恢复语音：
-> `import voice; voice.stop(); voice.start()`。
-
 **语音控制（CI-33T 模块，上电默认开启）** — 由 `frozen/voice.py` 实现，`import voice` 即自动启动 UART2（**波特率 9600**）并后台轮询。CI-33T 接线：**PA2(TX)→GPIO20(UART2 RX)、PA3(RX)←GPIO19(UART2 TX)**、波特率 9600（详见 [硬件连接.md](../PCB/硬件连接.md)）。
 
 > ⚠ **GPIO19/20 = USB_D-/USB_D+，必须关闭 TinyUSB 才能当 UART2 用**（2026-08-19 实测根因）：
@@ -295,9 +272,9 @@ voice.stop()            # 停止后台轮询; 重新开: voice.start()
 > 或者接受"先刷固件、期间语音指令不响应"，改完平台侧即恢复。
 
 
-### 2.2 外部扩展串口（UART1）
+### 2.2 串口通信（bpuppy_uart）
 
-**UART1** — GPIO 4=TX, 5=RX，**与摄像头 SCCB SDA/SCL 共享引脚，不拍照时可用**。
+**UART1 · 外部扩展口** — GPIO 4=TX, 5=RX，**与摄像头 SCCB SDA/SCL 共享引脚，不拍照时可用**。
 
 ```python
 import bpuppy_uart
@@ -318,6 +295,28 @@ n = bpuppy_uart.u1_any()
 | `bpuppy_uart.u1_stop()` | 停止 UART1 (释放外设, 可重新 init) |
 
 > 手动初始化，上电不自动启动 —— 引脚与摄像头共用（GPIO4/5），不拍照时才能用。
+
+**UART2 · 直连口（备用，一般用不到）** — 板载语音模块占着：上电 `voice` 已经把它开在 9600，**再调 `bpuppy_uart.init(2, …)` 是空操作**（驱动打印 "UART2 already initialized" 直接返回，连波特率都改不了）；`read()` 还会跟语音的后台轮询抢字节。所以这套 `init / send / read / any / stop` 只有两种情况用得上：**把语音模块换成别的串口设备**（micro:bit 等），或**停掉语音、自己收发原始字节**。
+
+```python
+import bpuppy_uart, voice
+voice.stop()                          # 停语音轮询（不停的话读到的字节会被它抢走）
+bpuppy_uart.stop()                    # 关掉语音那条 9600 链路
+bpuppy_uart.init(2, 19, 20, 115200)   # 按新设备重开（TX=19, RX=20）
+bpuppy_uart.send(b"hello")
+data = bpuppy_uart.read(64)
+```
+
+| 调用示例 | 说明 |
+|------|------|
+| `bpuppy_uart.init(2, 19, 20, 9600)` | 初始化 UART2 (num, tx, rx, baud) |
+| `bpuppy_uart.send(b"hello")` | 发送 bytes 或 str |
+| `bpuppy_uart.read(64)` | 读取最多 64 字节 (非阻塞) |
+| `bpuppy_uart.any()` | 缓冲中可读字节数 |
+| `bpuppy_uart.sendline("AT")` | 发送字符串 + CRLF |
+| `bpuppy_uart.stop()` | 停止 UART2 (释放外设, 可重新 init) |
+
+> 想恢复语音：`bpuppy_uart.stop()` → `voice.stop()` → `voice.start()`（`voice.start()` 里会重新 init 9600；或者直接复位）。
 
 ### 2.3 上电开关文件
 
