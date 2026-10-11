@@ -20,7 +20,7 @@
   - [3.1 摄像头操作 bpuppy_camera](#31-摄像头操作-bpuppy_camera)
 - [四、设置与校准](#四设置与校准)
   - [4.1 舵机校准 bpuppy_servo](#41-舵机校准-bpuppy_servo)
-  - [4.2 参数表（持久化 / 运行时）](#42-参数表持久化--运行时)
+  - [4.2 参数表（持久化）](#42-参数表持久化)
 - [五、传感器与姿态](#五传感器与姿态)
   - [5.1 IMU 调试 bpuppy_imu](#51-imu-调试-bpuppy_imu)
   - [5.2 IMU 校准（陀螺 + 加速度计）](#52-imu-校准陀螺--加速度计)
@@ -74,19 +74,20 @@ bpuppy_motion.set_gait("walk")
 - **进 MOTION**：`set_gait('go'/'walk'/'trot'/'stop')` → 自动切运动模式
 - 查询当前模式：`bpuppy_motion.get_mode()`
 
-**停止（GAIT_STOP）vs 站立（POSE_STAND）：**
-
-
-| | `set_gait('stop')` | `poses.stand()` |
-|---|---|---|
-| 模式 | MOTION | POSE |
-| 控制器 | C 层 IK | Python IK |
-| 高度 | 随 `set_params` 高度 | 固定 70mm |
-| 用途 | 停止站好 | 姿态区站立 |
+>**停止（GAIT_STOP）vs 站立（POSE_STAND）：**
+>**停止步态**与**站立姿态**分别是两种不同模式情况下的静止站立状态，它们的区别如下：
+>
+>| | `set_gait('stop')` | `poses.stand()` |
+>|---|---|---|
+>| 模式 | MOTION | POSE |
+>| 控制器 | C 层 IK | Python IK |
+>| 高度 | 随 `set_params` 高度 | 固定 70mm |
+>| 用途 | 停止站好 | 姿态区站立 |
+>
 
 ### 1.1 姿态设置（poses）
 
-`poses` 的几个姿态动作会**自动切到姿态模式 (POSE)** —— Python 直接写舵机（模式切换见 [§1.2.1](#121-运行模式自动切换)）。全部是固定角度 / 固定高度。
+`poses` 的几个姿态动作会**自动切到姿态模式 (POSE)** , 固定角度 / 固定高度。
 
 | 调用 | 说明 |
 |------|------|
@@ -96,30 +97,30 @@ bpuppy_motion.set_gait("walk")
 | `poses.wave()` | 挥手 (坐下 + 右前膝摆动 3 次, 完成回坐) |
 | `poses.stand()` | 站立 (POSE_STAND, 固定高度) |
 
-> 写任意角度 / 缓动 / 正弦摆动（`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`）见 [§5.7 扩展舵机](#57-扩展舵机-pwm_ext) —— 主舵机与扩展舵机同一套 API。
+> **姿态模式**下，也有包含简单运动的“姿态”，比如play和wave中就包含简单的往复运动。
 
 ### 1.2 运动设置（bpuppy_motion）
 
-**函数（调用即用）:**
-
-| 调用示例 | 说明 |
-|------|------|
-| `bpuppy_motion.start()` | 启动 50Hz 运动任务（自动加载几何参数） |
-| `bpuppy_motion.set_gait("walk")` | 切换步态（见下方步态列表） |
-| `bpuppy_motion.set_gait("stop")` | 停止站好 (GAIT_STOP, 留运动模式) |
-| `bpuppy_motion.get_mode()` | 查询运行模式 (0=IDLE, 1=POSE, 2=MOTION) |
-| `bpuppy_motion.show_geometry()` | 查看全部持久化 + 运行时参数 |
-| `bpuppy_motion.load_geometry()` | 从 NVS 重新加载持久化参数 |
-
-**运行时参数（掉电丢失，需每次设置）：**
+**函数与参数:**
 
 | 调用示例 | 默认值 | 说明 |
 |------|--------|------|
+| `bpuppy_motion.start()` | — | 启动 50Hz 运动任务（自动加载几何参数） |
+| `bpuppy_motion.set_gait("walk")` | — | 切换步态（见下方步态列表） |
+| `bpuppy_motion.set_gait("stop")` | — | 停止站好 (GAIT_STOP, 留运动模式) |
+| `bpuppy_motion.get_mode()` | — | 查询运行模式 (0=IDLE, 1=POSE, 2=MOTION) |
+| `bpuppy_motion.show_geometry()` | — | 查看全部持久化 + 运行时参数 |
+| `bpuppy_motion.load_geometry()` | — | 从 NVS 重新加载持久化参数 |
 | `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | (stride, lift, height): **步长 / 抬腿高度 / 站立高度**。stride 只表**幅度**（≥0，0 = 原地踏步）。写入前参数组合会被校验，超限的参数组合会被拒绝。校验失败会返回 `True`/`False` |
-| `bpuppy_motion.set_direction(1)` | 1 | **方向**：`+1` = 前 / `-1` = 后。
+| `bpuppy_motion.set_direction(1)` | 1 | **方向**：`+1` = 前 / `-1` = 后 |
 | `bpuppy_motion.set_speed(2.5)` | 2.5 | **步频** 0~10 |
 | `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(俯仰, 横滚)** 身体倾角 (deg)。**纯手动设定，无 IMU 反馈**；go/walk/trot 三个步态都生效，设了就保持。**够不着时整条被拒**（俯仰横滚一个都不写、保持原值），返回 `True`/`False`。默认参数下 \|俯仰\| ≤ 3.7°、\|横滚\| ≤ 6.2° —— 想压更大先减小步长 |
 | `bpuppy_motion.set_turn(0)` | 0 | 转弯率 -1~+1。超出 ±1 **会被钳到 ±1**（仍写入），此时返回 `False` |
+| `bpuppy_motion.set_center_spacing(0)` | 0 | 中位点**间距** (mm)：前腿 +s/2、后腿 −s/2，正=展开、负=收窄。低站高时展开可配平髋/膝余量（S=70/H=45 展开到 66 → 髋余量 0.4°→23.6°）；闸门同 set_center 两道。读回 `get_center()`。**只在 walk/trot 生效，GO 不叠加** |
+| `bpuppy_motion.set_sway(0)` | 0 | 相位联动**摆动** (mm)：walk 抬脚/落地四个瞬间的稳定裕量补偿（那时重心离支撑边只有 ~2mm，但摆动腿还贴地——真实最低裕量在别处，约 4.6mm）。**默认 0（关）**，按需开：**3~7 平滑**（有效最低裕量 4.6→~7.5mm）；**> 0.0995×步长**（S70 → 7mm）机身会"走一步停一下"—— 走速本身就是摆动的速度尺子，改不了。闸门同 set_center 两道。读回 `get_sway()`。只在 walk 族生效（trot / GO 高速段自动归零）|
+| `bpuppy_motion.set_omega(2.0)` | 2.0 | 基准角频率 (rad/s)，调**步态快慢**：周期 = 2π/(omega × speed)。无闸门 |
+
+> 表内 **`set_xxx` 参数类都掉电丢失**——每次上电需重新设置；**持久化参数**（几何 / 限位 / 重心偏移 / 舵机校准）见 [§4.2](#42-参数表持久化)。
 
 > ⚠ **`go` 步态会接管 stride/lift/height。** 走 go 时步长、站高、抬脚由算法自己决定，**设置的参数无效**。
 > （当speed≤4时， 步长 70 / 站高 70 / 抬脚 30；当speed≥6时， 步长 50 / 站高 70 / 抬脚 5；中间部分线性插值）。
@@ -181,9 +182,6 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 > 这样设计是因为**指令可能真的会损坏** —— 例如蓝牙传中文/长串时会整段丢字节
 > （蓝牙传含中文的代码会整段丢字节，`"trot"` 可能传成 `"tr"`），此时停车是唯一安全的结局，好过拿损坏的字符串去猜步态。
 > 未知名字会在 REPL 打印 `⚠ 未知步态 "xxx" → 停车`。
-
-### 1.2.1 运行模式（自动切换）
-
 
 
 ### 1.2.2 参数校验（超限拒绝）
@@ -501,7 +499,7 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 
 > 方向约定（髋 0/90/180 指向、膝左右镜像）见 [AGENTS.md](../AGENTS.md) 的「舵机角度标定」表。
 
-### 4.2 参数表（持久化 / 运行时）
+### 4.2 参数表（持久化）
 
 **持久化（★NVS，掉电保留）：**
 
@@ -513,15 +511,8 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 | 舵机 | `bpuppy_servo.cal(ch, 90)` ★ | 8 路校准参考角 (deg) |
 | 重心 | `bpuppy_motion.set_center(0)` ★ | 中位点**中点**前后平移 (mm)，正=前移，前后腿一起挪，**两道闸门**：① ≤ 大腿长/2（默认 ±20）② 跟当前 stride/height 组合够得着 —— 默认参数下 ② 更紧，实际只到 **±11.4mm** |
 
-**运行时（不落盘，掉电回默认）：**
-
-| 组 | 调用示例 | 默认值 |
-|----|------|--------|
-| 重心 | `bpuppy_motion.set_center_spacing(0)` | 中位点**间距** (mm)：前腿 +s/2、后腿 −s/2，正=展开、负=收窄。低站高时展开可配平髋/膝余量（S=70/H=45 展开到 66 → 髋余量 0.4°→23.6°）；闸门同 set_center 两道。读回 `get_center()`。**只在 walk/trot 生效，GO 不叠加** |
-| 重心 | `bpuppy_motion.set_sway(0)` | 相位联动**摆动** (mm)：walk 抬脚/落地四个瞬间的稳定裕量补偿（那时重心离支撑边只有 ~2mm，但摆动腿还贴地——真实最低裕量在别处，约 4.6mm）。**默认 0（关）**，按需开：**3~7 平滑**（有效最低裕量 4.6→~7.5mm）；**> 0.0995×步长**（S70 → 7mm）机身会"走一步停一下"—— 走速本身就是摆动的速度尺子，改不了。闸门同 set_center 两道。读回 `get_sway()`。只在 walk 族生效（trot / GO 高速段自动归零）|
-| 步态 | `bpuppy_motion.set_omega(2.0)` | 基准角频率 (rad/s)，调**步态快慢**：周期 = 2π/(omega × speed)。纯运行时、不落盘（掉电回 **2.0**），无闸门 |
-
-> **持久化表**里的参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**运行时表**（`set_center_spacing` / `set_sway` / `set_omega`）**完全不碰 flash**，掉电回各自默认（0 / 0 / 2.0）。
+> 上表参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。
+> **掉电丢失的运行时参数**（stride/lift/height、方向、速度、身体姿态、转弯、中点间距、摆动、omega 等）见 [§1.2 函数与参数](#12-运动设置bpuppy_motion)。
 >
 > `show_geometry()` 打印几何参数 + 各路舵机的 **90° 点**校准值，**不显示 0°/180° 点** —— 那两点要用 `bpuppy_servo.get_cal_point(ch, 0/2)` 单独读。
 >

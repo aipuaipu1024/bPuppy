@@ -30,7 +30,7 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
   - [3.1 Camera Operation — bpuppy_camera](#31-camera-operation--bpuppy_camera)
 - [4. Settings & Calibration](#4-settings--calibration)
   - [4.1 Servo Calibration — bpuppy_servo](#41-servo-calibration--bpuppy_servo)
-  - [4.2 Parameter Tables (persistent / runtime-only)](#42-parameter-tables-persistent--runtime-only)
+  - [4.2 Parameter Tables (persistent)](#42-parameter-tables-persistent)
 - [5. Sensors & Attitude](#5-sensors--attitude)
   - [5.1 IMU Debugging — bpuppy_imu](#51-imu-debugging--bpuppy_imu)
   - [5.2 IMU Calibration (gyro + accelerometer)](#52-imu-calibration-gyro--accelerometer)
@@ -73,7 +73,7 @@ bpuppy_motion.set_gait("walk")
 
 > Stand-up self-balancing → [§1.3](#13-stand-up-self-balancing--balance);
 > inertial readings / magnetometer output → [§5.1](#51-imu-debugging--bpuppy_imu);
-> geometry / CoM parameters (persistent + runtime-only) → [§4.2](#42-parameter-tables-persistent--runtime-only).
+> geometry / CoM parameters (persistent) → [§4.2](#42-parameter-tables-persistent).
 
 
 ## 1. Motion
@@ -95,26 +95,26 @@ The `poses` actions **switch to pose mode (POSE) automatically** — Python driv
 
 ### 1.2 Motion Settings — bpuppy_motion
 
-**Functions (ready to call):**
-
-| Call example | Description |
-|------|------|
-| `bpuppy_motion.start()` | Start the 50Hz motion task (loads geometry parameters automatically) |
-| `bpuppy_motion.set_gait("walk")` | Switch gait (see the gait list below) |
-| `bpuppy_motion.set_gait("stop")` | Stop and stand (GAIT_STOP; stays in motion mode) |
-| `bpuppy_motion.get_mode()` | Query the run mode (0=IDLE, 1=POSE, 2=MOTION) |
-| `bpuppy_motion.show_geometry()` | Show all persistent + runtime parameters |
-| `bpuppy_motion.load_geometry()` | Reload persistent parameters from NVS |
-
-**Runtime parameters (lost on power-off; set them each time):**
+**Functions and parameters:**
 
 | Call example | Default | Description |
 |------|--------|------|
+| `bpuppy_motion.start()` | — | Start the 50Hz motion task (loads geometry parameters automatically) |
+| `bpuppy_motion.set_gait("walk")` | — | Switch gait (see the gait list below) |
+| `bpuppy_motion.set_gait("stop")` | — | Stop and stand (GAIT_STOP; stays in motion mode) |
+| `bpuppy_motion.get_mode()` | — | Query the run mode (0=IDLE, 1=POSE, 2=MOTION) |
+| `bpuppy_motion.show_geometry()` | — | Show all persistent + runtime parameters |
+| `bpuppy_motion.load_geometry()` | — | Reload persistent parameters from NVS |
 | `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | (stride, lift, height): **stride / lift height / standing height**. stride is **magnitude only** (≥0; 0 = marching in place); **direction is set separately** — negative values are rejected. All three are validated and written together; returns `True`/`False` |
 | `bpuppy_motion.set_direction(1)` | 1 | **Direction**: `+1` = forward / `-1` = backward. **Fully decoupled** from stride/speed/gait — changing direction doesn't touch the stride magnitude, and changing stride won't turn the dog around. `0` or `NaN` is rejected. Returns `True`/`False` |
 | `bpuppy_motion.set_speed(2.5)` | 2.5 | **Step frequency** 0~10, unrelated to the leg trajectory, can be changed on its own. Returns `True`/`False` |
 | `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(pitch, roll)** body tilt angles (deg). **Purely manual — no IMU feedback**; effective in go/walk/trot and held once set. **If unreachable, the whole call is rejected** (neither pitch nor roll is written; old values kept). Returns `True`/`False`. With default parameters \|pitch\| ≤ 3.7°, \|roll\| ≤ 6.2° — to lean further, first reduce the stride |
 | `bpuppy_motion.set_turn(0)` | 0 | Turn rate -1~+1. Values beyond ±1 **are clamped to ±1** (still written); in that case it returns `False` |
+| `bpuppy_motion.set_center_spacing(0)` | 0 | Neutral-point **spacing** (mm): front legs +s/2, rear legs −s/2; positive = spread, negative = contract. At a low stance, spreading balances the hip/knee margins (S=70/H=45, spread to 66 → hip margin 0.4°→23.6°); same two checks as `set_center`. Read back with `get_center()`. **walk/trot only — not applied in GO** |
+| `bpuppy_motion.set_sway(0)` | 0 | Phase-locked **sway** (mm): stability-margin compensation at the four walk lift/land instants (there the CoM is only ~2mm from the support edge — but the swing foot is still grazing, so the true worst margin is elsewhere, ~4.6mm). **Default 0 (off)**; turn it on as needed: **3~7 is smooth** (effective worst margin 4.6 → ~7.5mm); **above 0.0995×stride** (7mm at S70) the body visibly "pauses every step" — the walking speed itself is the sway's speed budget, so this can't be waved away. Same two checks as `set_center`. Read back with `get_sway()`. Walk family only (auto-zeroed in trot / high-speed GO) |
+| `bpuppy_motion.set_omega(2.0)` | 2.0 | Base angular frequency (rad/s); adjusts **how fast the gait runs** — period = 2π/(omega × speed). No checks |
+
+> Every **`set_xxx` parameter call in this table is lost on power-off** — set them again each boot; **persistent parameters** (geometry / joint limits / CoM offset / servo calibration) are in [§4.2](#42-parameter-tables-persistent).
 
 > **Changing standing height / lift / pitch / roll / CoM while moving is smoothly interpolated** — it advances a small step each frame and typically takes 0.3s to arrive; it never jumps in a single frame. When stationary the change takes effect immediately (the "max 3° per frame" limiter covers that case).
 >
@@ -517,7 +517,7 @@ Every call writes NVS once, so **the last value you settle on is the final one**
 
 > For direction conventions (where the hip points at 0/90/180, left/right knee mirroring) see the "Servo Angle Calibration" ("舵机角度标定") table in [AGENTS.md](../AGENTS.md).
 
-### 4.2 Parameter Tables (persistent / runtime-only)
+### 4.2 Parameter Tables (persistent)
 
 **Persistent (★NVS, survive power-off):**
 
@@ -529,15 +529,8 @@ Every call writes NVS once, so **the last value you settle on is the final one**
 | Servo | `bpuppy_servo.cal(ch, 90)` ★ | Calibration reference angles for all 8 channels (deg) |
 | CoM | `bpuppy_motion.set_center(0)` ★ | Foot center offset (mm); positive = forward. **Two checks**: ① ≤ upper-leg length / 2 (default ±20); ② reachable in combination with the current stride/height — at default parameters ② is tighter and it actually only goes to **±11.4mm** |
 
-**Runtime-only (never saved; reset to defaults on power-off):**
-
-| Group | Call example | Default |
-|----|------|--------|
-| CoM | `bpuppy_motion.set_center_spacing(0)` | Neutral-point **spacing** (mm): front legs +s/2, rear legs −s/2; positive = spread, negative = contract. At a low stance, spreading balances the hip/knee margins (S=70/H=45, spread to 66 → hip margin 0.4°→23.6°); same two checks as `set_center`. Read back with `get_center()`. **walk/trot only — not applied in GO** |
-| CoM | `bpuppy_motion.set_sway(0)` | Phase-locked **sway** (mm): stability-margin compensation at the four walk lift/land instants (there the CoM is only ~2mm from the support edge — but the swing foot is still grazing, so the true worst margin is elsewhere, ~4.6mm). **Default 0 (off)**; turn it on as needed: **3~7 is smooth** (effective worst margin 4.6 → ~7.5mm); **above 0.0995×stride** (7mm at S70) the body visibly "pauses every step" — the walking speed itself is the sway's speed budget, so this can't be waved away. Same two checks as `set_center`. Read back with `get_sway()`. Walk family only (auto-zeroed in trot / high-speed GO) |
-| Gait | `bpuppy_motion.set_omega(2.0)` | Base angular frequency (rad/s); adjusts **how fast the gait runs** — period = 2π/(omega × speed). Runtime-only, never saved (resets to **2.0**), no checks |
-
-> The **persistent** table's parameters are written to NVS automatically when set (9 geometry/CoM values + 3 points × 8 servos = 24 calibration values); `motion.start()` restores them automatically. With no NVS data it falls back to the `ik.h` macro defaults. The **runtime-only** table (`set_center_spacing` / `set_sway` / `set_omega`) **never touches flash** and resets to its defaults (0 / 0 / 2.0) on power-off.
+> The parameters in this table are written to NVS automatically when set (9 geometry/CoM values + 3 points × 8 servos = 24 calibration values); `motion.start()` restores them automatically. With no NVS data it falls back to the `ik.h` macro defaults.
+> **Runtime-only parameters lost on power-off** (stride/lift/height, direction, speed, body pose, turn, center spacing, sway, omega, ...) are in [§1.2 Functions and parameters](#12-motion-settings--bpuppy_motion).
 >
 > `show_geometry()` prints the geometry parameters + each servo's **90° point** calibration value; **it does not show the 0°/180° points** — read those separately with `bpuppy_servo.get_cal_point(ch, 0/2)`.
 >
