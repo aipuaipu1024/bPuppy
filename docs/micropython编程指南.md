@@ -2,16 +2,6 @@
 
 > 🌐 [English](micropython-guide.en.md)
 
-给**写代码的人**：在 REPL 里敲，或写 `.py` 传到板子上跑。**所有 MicroPython 接口都在这份里**。
-
-> - 用积木的 → [kittenblock图形化编程指南.md](kittenblock图形化编程指南.md)
-> - 连 WiFi 图传 / 网页遥控 → [wifi设备遥控指南.md](wifi设备遥控指南.md)
-> - 刚拿到板子（烧固件 / 标定 / 验收）→ [新板上电操作指南.md](新板上电操作指南.md)
-> - 硬件接线 → [硬件连接.md](../PCB/硬件连接.md)　原理与源码全貌 → [AGENTS.md](../AGENTS.md)
-
-**怎么把 `.py` 传到板子上**：见 [新板上电操作指南.md](新板上电操作指南.md) 的 bTool「文件管理」页。
-串口 / REPL 的连接参数（**115200**、CH343、走 UART0）见 [AGENTS.md](../AGENTS.md) 的「串口连接」。
-
 ---
 
 ## 目录
@@ -19,11 +9,10 @@
 - [〇、速查](#〇速查)
   - [快速上手（常用运动组合）](#快速上手常用运动组合)
 - [一、运动](#一运动)
-  - [1.1 常用运动组合](#11-常用运动组合)
-  - [1.2 运动指令 bpuppy_motion](#12-运动指令-bpuppy_motion)
-    - [1.2.1 运行模式（自动切换）](#121-运行模式自动切换)
-    - [1.2.2 参数校验（超限拒绝）](#122-参数校验超限拒绝)
-  - [1.3 站立自平衡 balance](#13-站立自平衡-balance)
+  - [1.1 运动指令 bpuppy_motion](#11-运动指令-bpuppy_motion)
+    - [1.1.1 运行模式（自动切换）](#111-运行模式自动切换)
+    - [1.1.2 参数校验（超限拒绝）](#112-参数校验超限拒绝)
+  - [1.2 站立自平衡 balance](#12-站立自平衡-balance)
 - [二、通信](#二通信)
   - [2.1 串口通信 bpuppy_uart](#21-串口通信-bpuppy_uart)
   - [2.2 上电开关文件](#22-上电开关文件)
@@ -48,8 +37,6 @@
 
 ### 快速上手（常用运动组合）
 
-> 三套写法的**整套**贴（三选一）—— 整块粘会依次执行、最后一套生效。
-
 ```python
 import bpuppy_motion
 # 最快
@@ -58,12 +45,12 @@ bpuppy_motion.set_speed(8.5)              # 步频
 bpuppy_motion.set_gait("trot")
 
 # 这也不错
-bpuppy_motion.set_params(50, 10, 70)
+bpuppy_motion.set_params(50, 10, 70)      # 步长/抬腿/身高
 bpuppy_motion.set_speed(8.5)
 bpuppy_motion.set_gait("trot")
 
-# 最稳
-bpuppy_motion.set_params(70, 30, 70)
+# 最稳步态
+bpuppy_motion.set_params(70, 30, 70)      # 步长/抬腿/身高
 bpuppy_motion.set_speed(2.5)
 bpuppy_motion.set_gait("walk")
 ```
@@ -74,26 +61,9 @@ bpuppy_motion.set_gait("walk")
 > 不动步长/抬腿/身高。同样返回 `True`/`False`。
 
 
-> 站立自平衡 → [§1.3](#13-站立自平衡-balance)；
-> 惯导读数 / 磁力计输出 → [§5.1](#51-imu-调试-bpuppy_imu)；
-> 几何 / 重心参数（持久化 + 运行时）→ [§4.2](#42-参数表持久化--运行时)。
-
 
 ## 一、运动
-
-### 1.1 常用运动组合
-
-三个实测最优方案（完整代码见上面的「速查」，拷过来就能跑）：
-
-| 方案 | speed | stride | height | lift | gait |
-|------|-------|--------|--------|------|------|
-| 最快 | 8.5 | 70 | 60 | 20 | trot |
-| 这也不错 | 8.5 | 50 | 70 | 30 | trot |
-| 最稳 | 2.5 | 70 | 70 | 30 | walk |
-
-> 关机前先 `poses.crouch()` 让舵机放松。
-
-### 1.2 运动指令 bpuppy_motion
+### 1.1 运动指令 bpuppy_motion
 
 **函数（调用即用）:**
 
@@ -110,22 +80,14 @@ bpuppy_motion.set_gait("walk")
 
 | 调用示例 | 默认值 | 说明 |
 |------|--------|------|
-| `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | (stride, lift, height): **步长 / 抬腿高度 / 站立高度**。stride 只表**幅度**（≥0，0 = 原地踏步），**方向另设** —— 给负数会被拒。三个值一起校验一起写，返回 `True`/`False` |
-| `bpuppy_motion.set_direction(1)` | 1 | **方向**：`+1` = 前 / `-1` = 后。与步长/速度/步态**完全解耦** —— 改方向不会碰步长的幅度，改步长也不会让狗掉头。给 `0` 或 `NaN` 被拒。返回 `True`/`False` |
-| `bpuppy_motion.set_speed(2.5)` | 2.5 | **步频** 0~10，与腿部轨迹无关，可单独改。返回 `True`/`False` |
-| `bpuppy_motion.set_omega(2.0)` | 2.0 | 基准角频率 (rad/s), 调步态快慢 |
+| `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | (stride, lift, height): **步长 / 抬腿高度 / 站立高度**。stride 只表**幅度**（≥0，0 = 原地踏步）。写入前参数组合会被校验，超限的参数组合会被拒绝。校验失败会返回 `True`/`False` |
+| `bpuppy_motion.set_direction(1)` | 1 | **方向**：`+1` = 前 / `-1` = 后。
+| `bpuppy_motion.set_speed(2.5)` | 2.5 | **步频** 0~10 |
 | `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(俯仰, 横滚)** 身体倾角 (deg)。**纯手动设定，无 IMU 反馈**；go/walk/trot 三个步态都生效，设了就保持。**够不着时整条被拒**（俯仰横滚一个都不写、保持原值），返回 `True`/`False`。默认参数下 \|俯仰\| ≤ 3.7°、\|横滚\| ≤ 6.2° —— 想压更大先减小步长 |
 | `bpuppy_motion.set_turn(0)` | 0 | 转弯率 -1~+1。超出 ±1 **会被钳到 ±1**（仍写入），此时返回 `False` |
 
-> **运动中改 站高 / 抬脚 / 俯仰 / 横滚 / 重心 是平滑过渡的** —— 每帧走一小步，典型变化 0.3 秒到位，
-> 不会一帧跳过去。静止时改则直接生效（那时另有「每帧最多 3°」的限制器兜着）。
->
-> 读回用 `get_params()`，顺序是 `(speed, stride, height, lift, omega, turn, gait, direction)`
-> —— 注意跟 `set_params(stride, lift, height)` 的**参数顺序不一样**。
-> `[1]` 是**带符号**的步长（= 幅度 × 方向，负号表示后退），`[7]` 是方向本身。
->
-> ⚠ **`go` 步态会接管 stride/lift/height。** 走 go 时步长、站高、抬脚由 speed 自己算
-> （speed≤4 → 步长 70 / 站高 70 / 抬脚 30；speed≥6 → 步长 50 / 站高 70 / 抬脚 **5**；中间线性插值）。
+> ⚠ **`go` 步态会接管 stride/lift/height。** 走 go 时步长、站高、抬脚由算法自己决定，**设置的参数无效**。
+> （当speed≤4时， 步长 70 / 站高 70 / 抬脚 30；当speed≥6时， 步长 50 / 站高 70 / 抬脚 5；中间部分线性插值）。
 > 用户设的三个值**会被接受并保存、但不参与 go 的运动** —— 之后切到 walk / trot 立刻按它们走。
 > 于是：四个方向块（前进/后退/左转/右转）用的都是 go ⇒「运动参数」积木对它们**没有影响**，
 > 想让「运动参数」起作用得先用「切换步态」选 walk 或 trot。
@@ -133,13 +95,22 @@ bpuppy_motion.set_gait("walk")
 
 **实测最优参数:**
 
-| 步态 | speed | stride | height | lift | pose | 备注 |
-|------|-------|--------|--------|------|------|------|
-| walk | 2.5 | 70 | 70 | 30 | pitch=-5 | 猫步, 稳而安静 |
-| trot | 8~8.5 | 50~70 | 70 | 30 | pitch=-3 | 小跑, 最快 |
+```python
+# 最快
+bpuppy_motion.set_params(70, 10, 60)      # 步长/抬腿/身高 (一次设完, 顺序无所谓)
+bpuppy_motion.set_speed(8.5)              # 步频
+bpuppy_motion.set_gait("trot")
 
-> ⚠ **walk 行的 pitch=-5 在当前固件下 stride=70 时会被组合校验拒**（默认允许 |俯仰| ≈3.7°）：
-> 想要 -5° 得把 stride 降到 **≈60 以下**，或者俯仰收到 -3°。
+# 这也不错
+bpuppy_motion.set_params(50, 10, 70)      # 步长/抬腿/身高
+bpuppy_motion.set_speed(8.5)
+bpuppy_motion.set_gait("trot")
+
+# 最稳步态
+bpuppy_motion.set_params(70, 30, 70)      # 步长/抬腿/身高
+bpuppy_motion.set_speed(2.5)
+bpuppy_motion.set_gait("walk")
+```
 
 > 降低身高 (height<70) 时需减小抬腿 (lift): **height=60 → lift≲25, height=50 → lift≲13**
 > （固件组合校验的实限约 29.7 / 15.6），再大就被拒（髋角超限）。
@@ -180,7 +151,7 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 > （蓝牙传含中文的代码会整段丢字节，`"trot"` 可能传成 `"tr"`），此时停车是唯一安全的结局，好过拿损坏的字符串去猜步态。
 > 未知名字会在 REPL 打印 `⚠ 未知步态 "xxx" → 停车`。
 
-### 1.2.1 运行模式（自动切换）
+### 1.1.1 运行模式（自动切换）
 
 系统有**三种运行模式**，由 C 层状态机自动切换，**无需手动操作**：
 
@@ -204,7 +175,7 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 | 高度 | 随 `set_params` 高度 | 固定 70mm |
 | 用途 | 停止站好 | 姿态区站立 |
 
-### 1.2.2 参数校验（超限拒绝）
+### 1.1.2 参数校验（超限拒绝）
 
 `set_params` 设置参数时自动校验，**超限/干涉则整组拒绝写入并保持原值**（REPL 输出提示，返回值 `False`）。
 **速度不参与几何判断**（仅 0~10 范围检查），它由独立的 `set_speed` 设置。
@@ -234,7 +205,7 @@ z = height - lift·sin(ease·π)
 > 降低身高时需减小抬腿（如 height=60→lift≤20，height=50→lift≤10），否则髋角超限被拒。校验日志显示具体哪条腿和角度。
 > 默认参数：speed=2.5, stride=70, height=70, lift=30。
 
-### 1.3 站立自平衡 balance
+### 1.2 站立自平衡 balance
 
 绕过运动任务，直接舵机控制。增量式 PID，50Hz 闭环。`start()` 会自动将磁力计融合切为「只修 yaw」模式（`set_mag_fusion(False)`），保证 roll/pitch 水平准确，`stop()` 时恢复。
 
@@ -574,14 +545,15 @@ bpuppy_servo.cal_point(0, 2, 178)   # ③ 试 178 → 腿在 180° 理想位
 | 舵机 | `bpuppy_servo.cal(ch, 90)` ★ | 8 路校准参考角 (deg) |
 | 重心 | `bpuppy_motion.set_center(0)` ★ | 中位点**中点**前后平移 (mm)，正=前移，前后腿一起挪，**两道闸门**：① ≤ 大腿长/2（默认 ±20）② 跟当前 stride/height 组合够得着 —— 默认参数下 ② 更紧，实际只到 **±11.4mm** |
 
-**运行时（不落盘，掉电回默认 0）：**
+**运行时（不落盘，掉电回默认）：**
 
 | 组 | 调用示例 | 默认值 |
 |----|------|--------|
 | 重心 | `bpuppy_motion.set_center_spacing(0)` | 中位点**间距** (mm)：前腿 +s/2、后腿 −s/2，正=展开、负=收窄。低站高时展开可配平髋/膝余量（S=70/H=45 展开到 66 → 髋余量 0.4°→23.6°）；闸门同 set_center 两道。读回 `get_center()`。**只在 walk/trot 生效，GO 不叠加** |
 | 重心 | `bpuppy_motion.set_sway(0)` | 相位联动**摆动** (mm)：walk 抬脚/落地四个瞬间的稳定裕量补偿（那时重心离支撑边只有 ~2mm，但摆动腿还贴地——真实最低裕量在别处，约 4.6mm）。**默认 0（关）**，按需开：**3~7 平滑**（有效最低裕量 4.6→~7.5mm）；**> 0.0995×步长**（S70 → 7mm）机身会"走一步停一下"—— 走速本身就是摆动的速度尺子，改不了。闸门同 set_center 两道。读回 `get_sway()`。只在 walk 族生效（trot / GO 高速段自动归零）|
+| 步态 | `bpuppy_motion.set_omega(2.0)` | 基准角频率 (rad/s)，调**步态快慢**：周期 = 2π/(omega × speed)。纯运行时、不落盘（掉电回 **2.0**），无闸门 |
 
-> **持久化表**里的参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**运行时表**（`set_center_spacing` / `set_sway`）**完全不碰 flash**，掉电回默认 0。
+> **持久化表**里的参数设定后自动写入 NVS（几何/重心 9 个 + 每路舵机 3 点 × 8 路 = 24 个校准值），`motion.start()` 自动恢复。无 NVS 数据时回退 `ik.h` 宏默认值。**运行时表**（`set_center_spacing` / `set_sway` / `set_omega`）**完全不碰 flash**，掉电回各自默认（0 / 0 / 2.0）。
 >
 > `show_geometry()` 打印几何参数 + 各路舵机的 **90° 点**校准值，**不显示 0°/180° 点** —— 那两点要用 `bpuppy_servo.get_cal_point(ch, 0/2)` 单独读。
 >
