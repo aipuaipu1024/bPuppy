@@ -13,9 +13,10 @@
   - [1.2 运动设置（bpuppy_motion）](#12-运动设置bpuppy_motion)
     - [1.2.1 运行模式（自动切换）](#121-运行模式自动切换)
     - [1.2.2 参数校验（超限拒绝）](#122-参数校验超限拒绝)
-- [二、通信](#二通信)
-  - [2.1 串口通信 bpuppy_uart](#21-串口通信-bpuppy_uart)
-  - [2.2 上电开关文件](#22-上电开关文件)
+- [二、串口通信与语音功能](#二串口通信与语音功能)
+  - [2.1 与语音模块通信](#21-与语音模块通信)
+  - [2.2 外部扩展串口（UART1）](#22-外部扩展串口uart1)
+  - [2.3 上电开关文件](#23-上电开关文件)
 - [三、视觉](#三视觉)
   - [3.1 摄像头操作 bpuppy_camera](#31-摄像头操作-bpuppy_camera)
 - [四、设置与校准](#四设置与校准)
@@ -107,14 +108,15 @@ bpuppy_motion.set_gait("walk")
 |------|--------|------|
 | `bpuppy_motion.start()` | — | 启动 50Hz 运动任务（自动加载几何参数） |
 | `bpuppy_motion.set_gait("stop")` | — | 停止站好 (GAIT_STOP, 留运动模式) |
-| `bpuppy_motion.set_gait("walk")` | — | walk步态，四脚交替抬起|
-| `bpuppy_motion.set_gait("trot")` | — | trot步态，对角线两脚一组，两组交替抬起|
+| `bpuppy_motion.set_gait("walk")` | — | walk步态（猫步），四脚交替抬起|
+| `bpuppy_motion.set_gait("trot")` | — | trot步态（小跑），对角线两脚一组，两组交替抬起|
 | `bpuppy_motion.set_gait("go")` | — | 自适应步态 （详解见附文）|
-| `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | (stride, lift, height): **步长 / 抬腿高度 / 站立高度**。stride 只表**幅度**（≥0，0 = 原地踏步）。写入前，参数组合会被系统校验，超限的参数组合会被拒绝。校验失败会返回 `True`/`False` （超限判断标准见附文）|
+| `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | stride, lift, height: **步长 / 抬腿高度 / 站立高度**。stride=0 时原地踏步。写入前，参数组合会被系统校验，超限的参数组合会被拒绝。校验失败会返回 `True`/`False` （超限判断标准见附文）|
 | `bpuppy_motion.set_direction(1)` | 1 | **方向**：`+1` = 前 / `-1` = 后 |
 | `bpuppy_motion.set_speed(2.5)` | 2.5 | **步频** 0~10 |
-| `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(俯仰, 横滚)** 身体倾角 (°)。**无 IMU 参与**（详解见附文）|
 | `bpuppy_motion.set_turn(0)` | 0 | 转弯率 -1~+1。负数左转，正数右转，0为直行。靠两侧差速来实现转弯功能：±1 时，两侧腿反向运动，原地转弯；±0.5 时，一侧腿运动，另一侧原地踏步。 |
+| `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(俯仰, 横滚)** 身体倾角 (°)。**无 IMU 参与**（详解见附文）|
+
 | `bpuppy_motion.set_center_spacing(0)` | 0 |**不常用参数**。前后腿步长中点间距的修正参数。（详解见附文） |
 | `bpuppy_motion.set_sway(0)` | 0 | **不常用参数**。walk 步态下的摆动量。(详解见附文)|
 | `bpuppy_motion.set_omega(2.0)` | 2.0 |**不常用参数** 基准角频率 (rad/s)，调**步态快慢**：周期 = 2π/(omega × speed)。|
@@ -124,27 +126,33 @@ bpuppy_motion.set_gait("walk")
 
 > **本表内所有参数都不具备掉电存储功能。**
 > **⚠ `go`自适应步态**  
-步长、站高、抬脚由算法决定，**用户设置的参数无效**。go步态参数算法：当speed≤4时， 步长 70 / 站高 70 / 抬脚 30；当speed≥6时， 步长 50 / 站高 70 / 抬脚 5；中间部分线性插值）。
+>步长、站高、抬脚由算法决定，**用户设置的参数无效**。go步态参数算法：当speed≤4时， 步长 70 / 站高 70 / 抬脚 30；当speed≥6时， 步长 50 / 站高 70 / 抬脚 5；中间部分线性插值）。
 >
-> ⚠ **`set_params` "超限"的判定**
+> **⚠ `set_params` "超限"的判定**
 > ① **步长**：`|stride| ≤ 2×髋距半长×0.85` ≈ **106mm**，再大就有双腿机械碰撞的风险
-> ② **站高**：名义 ≥15mm，实际先卡在髋角上 ≈ **20.6mm**；
+> ② **站高**：≤腿长；
 > ③ **抬脚**：`height − lift ≥ 0`（足端不能抬到髋上方）；
-> ④ **髋/膝角 + 可达距离**：按摆动相 **5 点 × 4 腿**逐点代进 IK 反算（采样，**不是连续仿真**，点与点之间不查）—— 每点查 ①**够不够得着**（超出大腿+小腿的可达长度、或太近把腿叠死，都拒）②**髋 [0°,180°] / 膝 [10°,170°]**（左右、前后镜像都算）。抬腿最高点最容易超。
-> 速度只查 0~10，不参与几何校验。常用换算：**height=60 → lift≲25；height=50 → lift≲13**（实测实限约 29.7 / 15.6）。
+> ④ **髋/膝角限位**：将参数带入 IK 计算，遍历足端实际摆动轨迹，任一点髋∈[0,180]° 膝∈[10,170]° | 则视为超限（含抬腿最高点） 
 >
-> **`set_body_pose` 详解**：纯手动设定的身体倾角，**不接 IMU 反馈**，设完就保持（go/walk/trot 都生效）。
-> 压得太斜会让腿够不着，够不着时**整条被拒**（俯仰横滚一个都不写、返回 `False`）—— 默认步长 70 下上限是 **|俯仰| ≤ 3.7°、|横滚| ≤ 6.2°**，想压更大先减小步长。
-> ⚠ 判断用的是你**存着的步长**，而 go 实际按 70 跑 —— 存小步长时设进去的大角度，切到 go 未必够得着。
+> **⚠`set_body_pose`**
+手动设定的身体倾角,通过调整四条腿的站高来实现，**不涉及 IMU 数据**。设置时，同样会进行超限判断，超限参数不予接受。返回False/True。
+>
+> **⚠`set_center_spacing` 详解**（不常用）：
+> 前后腿步长中点间距的修正参数，对walk和trot有效。本系统所有步态的足尖轨迹都采用对称轨迹，如果本参数设为默认值0，前后腿支撑相轨迹的中点间距=前后髋关节的间距。如果本参数设为正值a，则前后腿支撑相轨迹的的中点间距就会变为前后髋关节间距+a。从视觉上看，前后腿在行进过程中的间距更大了。当本参数为负值时，前后腿间距缩小。
+>
+> **⚠`set_sway` 详解**（不常用）：walk步态前进后退时,身体沿前后方向小幅摆动的幅度（mm），用于补偿抬脚 / 落地四个瞬间重心离支撑三角形边缘过近的问题。默认值为 0。
+>
+> **⚠ 未知步态** → 设置步态时，收到未知步态名时，系统会自动切换为停车。
 
-> **`set_center_spacing` 详解**（不常用）：把四条腿的中位点沿前后方向展开 / 收窄 —— 前腿 +s/2、后腿 −s/2，**正 = 展开**。
-> 低站高时腿折得厉害、髋膝角度余量小，前后展开能把余量配平（S=70 / H=45 展开到 66：髋余量 0.4° → 23.6°）。
-> **只在 walk / trot 生效**（go 不叠加）。校验同 `set_center`（够不着会拒）。取多少不用手算：`gait_sim/center_spacing_solver.py` 给步长 / 站高 / 抬脚就输出配平值。读回 `get_center()`（2 元组，间距是第 2 个）。
 
-> **`set_sway` 详解**（不常用）：walk 走路时身体沿前后方向小幅摆动的幅度（mm），补偿抬脚 / 落地四个瞬间重心离支撑边过近的问题。
-> **默认 0（关）**，要开时 **3~7 平滑**；**超过 0.0995×步长**（S70 → 7mm）机体会"走一步停一下"—— 摆动速度超过走路速度本身了，不是调手感能消掉的。
-> **只在 walk 族生效**（trot / go 高速段自动归零）。读回 `get_sway()`。
+**不管哪种步态，起步前都是同样四件事：**
 
+```python
+import bpuppy_motion
+bpuppy_motion.set_direction(1)           # ① 定方向 (+1 前 / -1 后, 上电默认 +1)
+bpuppy_motion.set_speed(2.5)             # ② 定步频 0~10
+bpuppy_motion.set_params(70, 30, 70)     # ③ 高级参数三兄弟: 步长幅度 / 抬脚高度 / 站立高度
+bpuppy_motion.set_gait("go")             # ④ 选步态，开始运动
 
 **实测最优参数:**
 
@@ -165,80 +173,21 @@ bpuppy_motion.set_params(70, 30, 70)      # 步长/抬腿/身高
 bpuppy_motion.set_speed(2.5)
 bpuppy_motion.set_gait("walk")
 ```
-
-> 降低身高 (height<70) 时需减小抬腿 (lift): **height=60 → lift≲25, height=50 → lift≲13**
-> （固件组合校验的实限约 29.7 / 15.6），再大就被拒（髋角超限）。
-
-**不管哪种步态，起步前都是同样四件事：**
-
-```python
-import bpuppy_motion
-bpuppy_motion.set_gait("go")             # ① 选步态
-bpuppy_motion.set_direction(1)           # ② 定方向 (+1 前 / -1 后, 上电默认 +1)
-bpuppy_motion.set_speed(2.5)             # ③ 定步频 0~10
-bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅度 / 抬脚高度 / 站立高度
 ```
 
-四者**互不干扰**：改方向不会碰步长的幅度，改步长不会让狗掉头，改速度不影响步态。
-`go` 是唯一的例外 —— 它的步长/站高/抬脚由 `speed` 自己推算，`set_params` 设的值
-**会被接受并保存、但不参与 go 的运动**（切到 walk / trot 立刻生效）。
-但**方向仍然独立**：go 一样听 `set_direction`。
-
-**步态列表:**
-
-| 调用示例 | 说明 |
-|-----------|------|
-| `bpuppy_motion.set_gait("stop")` | 停止站好 (GAIT_STOP, 高度随参数) |
-| `bpuppy_motion.set_gait("walk")` | 猫步 (方向由 `set_direction` 定；speed 只管步频) |
-| `bpuppy_motion.set_gait("trot")` | 小跑 (方向由 `set_direction` 定；speed 只管步频) |
-| `bpuppy_motion.set_gait("go")` | 自适应 (推荐): speed≤4→walk, speed≥6→trot, 4~6 全参数插值。★ go 下 **stride/lift/height 三个值全部无效**，只有 speed 管用（见下方警告）|
-
-> **未知步态名 → 停车，这是刻意的 fail-safe，不是缺陷。**
-> `set_gait()` 内部 `gait_type_t g = GAIT_STOP;` 是初值，名字不匹配任何一项时不做赋值，
-> 于是直接落到 STOP。所以拼错一个字母（比如 `"tr"`）= 狗原地停下。
-> 这样设计是因为**指令可能真的会损坏** —— 例如蓝牙传中文/长串时会整段丢字节
-> （蓝牙传含中文的代码会整段丢字节，`"trot"` 可能传成 `"tr"`），此时停车是唯一安全的结局，好过拿损坏的字符串去猜步态。
-> 未知名字会在 REPL 打印 `⚠ 未知步态 "xxx" → 停车`。
 
 
-### 1.2.2 参数校验（超限拒绝）
+## 二、串口通信与语音功能
 
-`set_params` 设置参数时自动校验，**超限/干涉则整组拒绝写入并保持原值**（REPL 输出提示，返回值 `False`）。
-**速度不参与几何判断**（仅 0~10 范围检查），它由独立的 `set_speed` 设置。
-
-| 参数 | 判断条件 | 拒绝原因 |
-|------|---------|---------|
-| **速度** | 0 ~ 10 | 超范围 |
-| **步长** | \|stride\| ≤ 2×body_half_l×0.85 ≈ **106mm** | 前后脚干涉 |
-| **高度** | 名义 `height ≥ 15mm`，但**实际先卡在髋角**（默认参数下 ≈ **20.6mm**）| 过低腿折叠干涉 / 髋角超限 |
-| **抬腿** | height - lift ≥ 0 | 抬腿过度（足端到髋上方） |
-| **髋/膝角** | 遍历足端实际摆动轨迹，任一点髋∈[0,180]° 膝∈[10,170]° | 超限（含抬腿最高点） |
-| **中位点** | `center_offset` ≤ 大腿长/2 ≈ **±20mm**；`center_spacing` ≤ 2×髋半距 ≈ **±125mm** | 量级闸门（第①道；第②道组合校验见表下） |
-
-**足端轨迹遍历**（髋/膝角核心判断），采样 `ease = 0, 0.25, 0.5, 0.75, 1.0`：
-
-```
-x = -|stride|/2 + |stride|·ease + center_offset + (±spacing/2，前腿 +、后腿 −)
-z = height - lift·sin(ease·π)
-```
-
-对 4 条腿（左/右 × 前/后）IK 解算，检查髋/膝角是否在限位内，**任一点超限即拒绝**。
-
-> 判断涉及 **stride / height / lift + 中位点两个量（`center_offset` / `center_spacing`）+ 姿态（roll/pitch）**，
-> 速度单独做 0~10 范围检查，不参与几何判断。
-> 中位点两个量都是**两道闸门**：① 量级（offset ±20mm、spacing ±125mm）；② 跟当前 stride/height/lift **组合起来够不够得着** —— 所以它们和步长是"你让一步我也让一步"的关系，被拒就先减小步长或降低站高。
-> ⚠ 参数互相依赖时注意**设置顺序**：例 `(stride=70, lift=30, height=45)` 在间距 0 下会被拒（摆动中点髋角超限），要先设一个能过的组合（如 lift=1）→ 设间距 → 再设目标参数。
-> 降低身高时需减小抬腿（如 height=60→lift≤20，height=50→lift≤10），否则髋角超限被拒。校验日志显示具体哪条腿和角度。
-> 默认参数：speed=2.5, stride=70, height=70, lift=30。
-
----
+UART2：语音模块通信串口，专用于跟CI-33T 语音模块双向通信。
+UART1：外部扩展串口，与摄像头复用管脚。
 
 
-## 二、通信
+### 2.1 与语音模块通信
 
-### 2.1 串口通信 bpuppy_uart
+CI-33T 语音模块接在 **UART2**（GPIO 19=TX, 20=RX），上电由 `voice` 自动启动、9600 波特率。详见 [硬件连接.md](../PCB/硬件连接.md) UART2 节。
 
-**UART2 (默认通信口)** — GPIO 19=TX, 20=RX，接 CI-33T 语音模块 / micro:bit。详见 [硬件连接.md](../PCB/硬件连接.md) UART2 节。
+**UART2 底层 API**（自己往外发数据用）:
 
 ```python
 import bpuppy_uart
@@ -249,20 +198,6 @@ data = bpuppy_uart.read(64)           # 读取 bytes (非阻塞)
 n = bpuppy_uart.any()                 # 缓冲字节数
 ```
 
-> ⚠ 改了波特率就改了 **UART2 这条链路本身**（板载语音模块跑 9600）—— 想恢复语音：
-> `import voice; voice.stop(); voice.start()`。
-
-**UART1 (摄像头复用口)** — GPIO 4=TX, 5=RX，**与摄像头 SCCB SDA/SCL 共享引脚，不拍照时可用**。
-
-```python
-import bpuppy_uart
-bpuppy_uart.u1_init(4, 5, 115200)      # TX=4, RX=5
-bpuppy_uart.u1_send(b"hello")
-bpuppy_uart.u1_sendline("AT")
-data = bpuppy_uart.u1_read(64)
-n = bpuppy_uart.u1_any()
-```
-
 | 调用示例 | 说明 |
 |------|------|
 | `bpuppy_uart.init(2, 19, 20, 9600)` | 初始化 UART2 (num, tx, rx, baud) |
@@ -271,11 +206,9 @@ n = bpuppy_uart.u1_any()
 | `bpuppy_uart.any()` | 缓冲中可读字节数 |
 | `bpuppy_uart.sendline("AT")` | 发送字符串 + CRLF |
 | `bpuppy_uart.stop()` | 停止 UART2 (释放外设, 可重新 init) |
-| `bpuppy_uart.u1_init(17, 18, 115200)` | 初始化 UART1 (摄像头复用脚) |
-| `bpuppy_uart.u1_send(b"hello")` / `u1_read(n)` / `u1_any()` / `u1_sendline(s)` | UART1 对应操作 |
-| `bpuppy_uart.u1_stop()` | 停止 UART1 (释放外设, 可重新 init) |
 
-> 两者均**手动初始化**，上电不自动启动（避免与摄像头抢引脚）。
+> ⚠ 改了波特率就改了 **UART2 这条链路本身**（板载语音模块跑 9600）—— 想恢复语音：
+> `import voice; voice.stop(); voice.start()`。
 
 **语音控制（CI-33T 模块，上电默认开启）** — 由 `frozen/voice.py` 实现，`import voice` 即自动启动 UART2（**波特率 9600**）并后台轮询。CI-33T 接线：**PA2(TX)→GPIO20(UART2 RX)、PA3(RX)←GPIO19(UART2 TX)**、波特率 9600（详见 [硬件连接.md](../PCB/硬件连接.md)）。
 
@@ -362,7 +295,31 @@ voice.stop()            # 停止后台轮询; 重新开: voice.start()
 > 或者接受"先刷固件、期间语音指令不响应"，改完平台侧即恢复。
 
 
-### 2.2 上电开关文件
+### 2.2 外部扩展串口（UART1）
+
+**UART1** — GPIO 4=TX, 5=RX，**与摄像头 SCCB SDA/SCL 共享引脚，不拍照时可用**。
+
+```python
+import bpuppy_uart
+bpuppy_uart.u1_init(4, 5, 115200)      # TX=4, RX=5
+bpuppy_uart.u1_send(b"hello")
+bpuppy_uart.u1_sendline("AT")
+data = bpuppy_uart.u1_read(64)
+n = bpuppy_uart.u1_any()
+```
+
+| 调用示例 | 说明 |
+|------|------|
+| `bpuppy_uart.u1_init(4, 5, 115200)` | 初始化 UART1 (tx, rx, baud) |
+| `bpuppy_uart.u1_send(b"hello")` | 发送 bytes 或 str |
+| `bpuppy_uart.u1_read(64)` | 读取最多 64 字节 (非阻塞) |
+| `bpuppy_uart.u1_any()` | 缓冲中可读字节数 |
+| `bpuppy_uart.u1_sendline("AT")` | 发送字符串 + CRLF |
+| `bpuppy_uart.u1_stop()` | 停止 UART1 (释放外设, 可重新 init) |
+
+> 手动初始化，上电不自动启动 —— 引脚与摄像头共用（GPIO4/5），不拍照时才能用。
+
+### 2.3 上电开关文件
 
 `frozen/main.py` 每次开机都会去板子上找这些开关文件：**文件在就执行，删掉就什么都不做**。
 所以文件本身就是开关 —— 不用重编译固件，也不用敲指令，下次上电即生效。
