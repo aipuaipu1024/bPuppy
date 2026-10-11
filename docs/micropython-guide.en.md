@@ -21,11 +21,10 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
 - [1. Motion](#1-motion)
   - [1.1 Pose Settings — poses](#11-pose-settings--poses)
   - [1.2 Motion Settings — bpuppy_motion](#12-motion-settings--bpuppy_motion)
-    - [1.2.1 Run Modes (automatic switching)](#121-run-modes-automatic-switching)
-    - [1.2.2 Parameter Validation (out-of-range rejected)](#122-parameter-validation-out-of-range-rejected)
-- [2. Communication](#2-communication)
-  - [2.1 Serial Communication — bpuppy_uart](#21-serial-communication--bpuppy_uart)
-  - [2.2 Power-On Scripts](#22-power-on-scripts)
+- [2. Serial Communication & Voice](#2-serial-communication--voice)
+  - [2.1 Voice Module Communication](#21-voice-module-communication)
+  - [2.2 Serial Communication — bpuppy_uart](#22-serial-communication--bpuppy_uart)
+  - [2.3 Power-On Scripts](#23-power-on-scripts)
 - [3. Vision](#3-vision)
   - [3.1 Camera Operation — bpuppy_camera](#31-camera-operation--bpuppy_camera)
 - [4. Settings & Calibration](#4-settings--calibration)
@@ -66,21 +65,34 @@ bpuppy_motion.set_speed(2.5)
 bpuppy_motion.set_gait("walk")
 ```
 
-> **`set_params(stride, lift, height)` validates and writes all three values in one call**; the `True`/`False` return value tells you whether they were written.
->
-> Speed is the **step frequency** and has nothing to do with the leg trajectory, so it has its own `set_speed(0~10)` you can change at any time without touching stride/lift/height. It also returns `True`/`False`.
-
-
-> Stand-up self-balancing → [§1.3](#13-stand-up-self-balancing--balance);
-> inertial readings / magnetometer output → [§5.1](#51-imu-debugging--bpuppy_imu);
-> geometry / CoM parameters (persistent) → [§4.2](#42-parameter-tables-persistent).
-
 
 ## 1. Motion
 
+The system has **three run modes**, switched automatically by the C-layer state machine — **no manual operation needed**:
+
+| Mode | Value | Description |
+|------|-----|------|
+| IDLE | 0 | Not yet initialized after power-on (brief) |
+| POSE | 1 | Pose mode: Python drives the servos (crouch/sit/stand/custom) |
+| MOTION | 2 | Motion mode: the C layer controls at 50Hz (go/walk/trot/stop) |
+
+**Automatic switching rules:**
+- **Entering POSE**: Python writes to the servos (`poses.sit()` / `set_angle` / `group_commit` / `cal`) → switches to pose mode automatically
+- **Entering MOTION**: `set_gait('go'/'walk'/'trot'/'stop')` → switches to motion mode automatically
+- Query the current mode: `bpuppy_motion.get_mode()`
+
+> **Stop (GAIT_STOP) vs stand (POSE_STAND)** are two "stand still" states in two different modes; the differences:
+>
+> | | `set_gait('stop')` | `poses.stand()` |
+> |---|---|---|
+> | Mode | MOTION | POSE |
+> | Controller | C-layer IK | Python IK |
+> | Height | Follows the `set_params` height | Fixed at 70mm |
+> | Purpose | Stop and stand | Standing in the pose domain |
+
 ### 1.1 Pose Settings — poses
 
-The `poses` actions **switch to pose mode (POSE) automatically** — Python drives the servos directly (mode switching: see [§1.2.1](#121-run-modes-automatic-switching)). All are fixed angles / fixed height.
+The `poses` actions **switch to pose mode (POSE) automatically** — fixed angles / fixed height.
 
 | Call | Description |
 |------|------|
@@ -90,7 +102,7 @@ The `poses` actions **switch to pose mode (POSE) automatically** — Python driv
 | `poses.wave()` | wave (sit + right front knee swings 3 times, then back to sit) |
 | `poses.stand()` | stand (POSE_STAND, fixed height) |
 
-> Writing arbitrary angles / easing / sine oscillation (`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`) is covered in [§5.7 Extension Servos](#57-extension-servos--pwm_ext) — main and extension servos share the same API.
+> In pose mode there are also "poses" that include simple motion — e.g. `play` and `wave` contain short back-and-forth movements.
 
 
 ### 1.2 Motion Settings — bpuppy_motion
@@ -100,34 +112,48 @@ The `poses` actions **switch to pose mode (POSE) automatically** — Python driv
 | Call example | Default | Description |
 |------|--------|------|
 | `bpuppy_motion.start()` | — | Start the 50Hz motion task (loads geometry parameters automatically) |
-| `bpuppy_motion.set_gait("walk")` | — | Switch gait (see the gait list below) |
 | `bpuppy_motion.set_gait("stop")` | — | Stop and stand (GAIT_STOP; stays in motion mode) |
+| `bpuppy_motion.set_gait("walk")` | — | walk (cat walk): the four feet lift alternately |
+| `bpuppy_motion.set_gait("trot")` | — | trot: diagonal pairs; the two pairs lift alternately |
+| `bpuppy_motion.set_gait("go")` | — | adaptive gait (details below) |
+| `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | stride, lift, height: **stride / lift height / standing height**. stride=0 marches in place. The combination is validated before writing; an out-of-range combination is rejected. Returns `True`/`False` (criteria below) |
+| `bpuppy_motion.set_direction(1)` | 1 | **Direction**: `+1` = forward / `-1` = backward |
+| `bpuppy_motion.set_speed(2.5)` | 2.5 | **Step frequency** 0~10 |
+| `bpuppy_motion.set_turn(0)` | 0 | Turn rate -1~+1. Negative = left, positive = right, 0 = straight. Turning works by differential stride: at ±1 the two sides move in opposite directions (spin in place); at ±0.5 one side walks while the other marches in place. |
+| `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(pitch, roll)** body tilt angles (deg). **No IMU involved** (details below) |
+| `bpuppy_motion.set_center_spacing(0)` | 0 | **Rarely used.** Correction for the front/rear neutral-point spacing (details below) |
+| `bpuppy_motion.set_sway(0)` | 0 | **Rarely used.** Body sway amount in walk gait (details below) |
+| `bpuppy_motion.set_omega(2.0)` | 2.0 | **Rarely used.** Base angular frequency (rad/s); adjusts **how fast the gait runs**: period = 2π/(omega × speed) |
 | `bpuppy_motion.get_mode()` | — | Query the run mode (0=IDLE, 1=POSE, 2=MOTION) |
 | `bpuppy_motion.show_geometry()` | — | Show all persistent + runtime parameters |
 | `bpuppy_motion.load_geometry()` | — | Reload persistent parameters from NVS |
-| `bpuppy_motion.set_params(70, 30, 70)` | 70, 30, 70 | (stride, lift, height): **stride / lift height / standing height**. stride is **magnitude only** (≥0; 0 = marching in place); **direction is set separately** — negative values are rejected. All three are validated and written together; returns `True`/`False` |
-| `bpuppy_motion.set_direction(1)` | 1 | **Direction**: `+1` = forward / `-1` = backward. **Fully decoupled** from stride/speed/gait — changing direction doesn't touch the stride magnitude, and changing stride won't turn the dog around. `0` or `NaN` is rejected. Returns `True`/`False` |
-| `bpuppy_motion.set_speed(2.5)` | 2.5 | **Step frequency** 0~10, unrelated to the leg trajectory, can be changed on its own. Returns `True`/`False` |
-| `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(pitch, roll)** body tilt angles (deg). **Purely manual — no IMU feedback**; effective in go/walk/trot and held once set. **If unreachable, the whole call is rejected** (neither pitch nor roll is written; old values kept). Returns `True`/`False`. With default parameters \|pitch\| ≤ 3.7°, \|roll\| ≤ 6.2° — to lean further, first reduce the stride |
-| `bpuppy_motion.set_turn(0)` | 0 | Turn rate -1~+1. Values beyond ±1 **are clamped to ±1** (still written); in that case it returns `False` |
-| `bpuppy_motion.set_center_spacing(0)` | 0 | Neutral-point **spacing** (mm): front legs +s/2, rear legs −s/2; positive = spread, negative = contract. At a low stance, spreading balances the hip/knee margins (S=70/H=45, spread to 66 → hip margin 0.4°→23.6°); same two checks as `set_center`. Read back with `get_center()`. **walk/trot only — not applied in GO** |
-| `bpuppy_motion.set_sway(0)` | 0 | Phase-locked **sway** (mm): stability-margin compensation at the four walk lift/land instants (there the CoM is only ~2mm from the support edge — but the swing foot is still grazing, so the true worst margin is elsewhere, ~4.6mm). **Default 0 (off)**; turn it on as needed: **3~7 is smooth** (effective worst margin 4.6 → ~7.5mm); **above 0.0995×stride** (7mm at S70) the body visibly "pauses every step" — the walking speed itself is the sway's speed budget, so this can't be waved away. Same two checks as `set_center`. Read back with `get_sway()`. Walk family only (auto-zeroed in trot / high-speed GO) |
-| `bpuppy_motion.set_omega(2.0)` | 2.0 | Base angular frequency (rad/s); adjusts **how fast the gait runs** — period = 2π/(omega × speed). No checks |
 
-> Every **`set_xxx` parameter call in this table is lost on power-off** — set them again each boot; **persistent parameters** (geometry / joint limits / CoM offset / servo calibration) are in [§4.2](#42-parameter-tables-persistent).
+> **All parameters in this table are lost on power-off.**
+> **⚠ `go` adaptive gait** — stride / standing height / lift are decided by the algorithm; **user-set values have no effect**. go parameter algorithm: speed≤4 → stride 70 / height 70 / lift 30; speed≥6 → stride 50 / height 70 / lift 5; linear interpolation in between.
+>
+> **⚠ How `set_params` judges "out of range"**
+> ① **Stride**: `|stride| ≤ 2×hip half-length×0.85` ≈ **106mm**; beyond that the legs can collide mechanically
+> ② **Standing height**: ≤ leg length
+> ③ **Lift**: `height − lift ≥ 0` (the foot end cannot go above the hip)
+> ④ **Hip/knee limits**: the parameters go through IK over the actual swing trajectory; any point with hip∈[0,180]°, knee∈[10,170]° counts as out of range (the lift peak is the most likely offender)
+>
+> **⚠ `set_body_pose`** — a manually set body tilt, achieved by adjusting the four legs' standing heights; **no IMU data involved**. It goes through the same out-of-range check; rejected values are not applied. Returns `False`/`True`.
+>
+> **⚠ `set_center_spacing` (rarely used)** — corrects the neutral-point spacing between the front and rear legs; effective in walk and trot. All gaits use symmetric foot trajectories: with the default 0, the mid-point spacing of the front/rear support-phase trajectories equals the front/rear hip spacing. With a positive value a it becomes hip spacing + a (visually the front and rear legs are farther apart while walking); negative values narrow the spacing.
+>
+> **⚠ `set_sway` (rarely used)** — in walk, the amplitude (mm) of the body's small fore-aft sway while moving forward/backward, compensating for the CoM getting too close to the support triangle's edge at the four lift/land instants. Default 0.
+>
+> **⚠ Unknown gait** → when `set_gait` receives an unknown name, the system automatically switches to stop.
 
-> **Changing standing height / lift / pitch / roll / CoM while moving is smoothly interpolated** — it advances a small step each frame and typically takes 0.3s to arrive; it never jumps in a single frame. When stationary the change takes effect immediately (the "max 3° per frame" limiter covers that case).
->
-> Read values back with `get_params()`, whose order is `(speed, stride, height, lift, omega, turn, gait, direction)`
-> — note this is **a different argument order** from `set_params(stride, lift, height)`.
-> `[1]` is the **signed** stride (= magnitude × direction; a negative sign means backward), and `[7]` is the direction itself.
->
-> ⚠ **The `go` gait takes over stride/lift/height.** Under go, stride, standing height and lift are computed from speed itself
-> (speed≤4 → stride 70 / height 70 / lift 30; speed≥6 → stride 50 / height 70 / lift **5**; linear interpolation in between).
-> The three values you set **are accepted and saved, but do not participate in go's motion** — switching to walk / trot afterwards immediately uses them.
-> Consequently: the four direction blocks (forward/backward/turn left/turn right) all use go ⇒ the "Motion Params" block has **no effect** on them;
-> to make "Motion Params" work, first pick walk or trot with the "Switch Gait" block.
-> **Direction is not affected by go** — it is an independent parameter, treated the same in all three gaits.
+**Whichever gait, it's always the same four things before moving:**
+
+```python
+import bpuppy_motion
+bpuppy_motion.set_direction(1)           # 1. direction (+1 forward / -1 backward; +1 by default at power-on)
+bpuppy_motion.set_speed(2.5)             # 2. step frequency 0~10
+bpuppy_motion.set_params(70, 30, 70)     # 3. the three advanced parameters: stride / lift height / standing height
+bpuppy_motion.set_gait("go")             # 4. choose the gait and start moving
+```
 
 **Measured optimal parameters:**
 
@@ -149,146 +175,42 @@ bpuppy_motion.set_speed(2.5)
 bpuppy_motion.set_gait("walk")
 ```
 
-> When lowering the standing height (height<70) you must reduce the lift: **height=60 → lift≲25, height=50 → lift≲13** (the combined check's actual limits are ≈29.7 / 15.6), otherwise the hip angle exceeds its limit and the parameter validation rejects it.
 
-**Whichever gait you use, it's always the same four things before moving:**
+## 2. Serial Communication & Voice
+
+UART2: the voice-module serial port, dedicated to two-way communication with the CI-33T voice module.
+UART1: the external extension serial port, sharing pins with the camera.
+
+### 2.1 Voice Module Communication
+
+**Wiring & startup** — the CI-33T connects to **UART2**: **PA2(TX)→GPIO20(UART2 RX), PA3(RX)←GPIO19(UART2 TX)**, 9600 baud. `import voice` at power-on starts it automatically (opens UART2 + background polling) — **no init code needed**. See the UART2 section of [硬件连接.md](../PCB/硬件连接.md).
+
+**Python interface (what you can call):**
 
 ```python
-import bpuppy_motion
-bpuppy_motion.set_gait("go")             # 1. Choose the gait
-bpuppy_motion.set_direction(1)           # 2. Set the direction (+1 forward / -1 backward; defaults to +1 at power-on)
-bpuppy_motion.set_speed(2.5)             # 3. Set the step frequency 0~10
-bpuppy_motion.set_params(70, 30, 70)     # 4. The three advanced parameters: stride magnitude / lift height / standing height
+import voice
+voice.play('汪汪')      # Play a preset sound ("woof woof" / "whimper"; mapping in voice.SND_WANG / SND_YING)
+voice.say(0x70, 1)      # Send one frame: bark #1 = woof woof (AA 55 70 01 55 AA)
+voice.say_num(66)       # Ask the module to announce a number 0~100 (AA 55 72 <number> 55 AA)
+voice.SoundAngle        # Last sound-source angle (deg, 0-180); -1 = none received since boot
+voice.on_cmd(0x30, lambda: print("stop received"))   # Register a callback fired on that command
+voice.stop()            # Stop the background polling; restart with voice.start()
 ```
 
-The four are **mutually independent**: changing direction doesn't touch the stride magnitude, changing stride won't turn the dog around, and changing speed doesn't affect the gait.
-`go` is the only exception — its stride/height/lift are derived from `speed`, and values set with `set_params`
-**are accepted and saved but do not participate in go's motion** (they take effect as soon as you switch to walk / trot).
-But **direction stays independent**: go obeys `set_direction` as well.
+**Its behavior: events only, no actions** — on receiving a voice command the firmware **only prints a log + fires event callbacks** (KittenBlock event blocks); all actions are programmed by the user in KittenBlock.
 
-**Gait list:**
-
-| Call example | Description |
-|-----------|------|
-| `bpuppy_motion.set_gait("stop")` | Stop and stand (GAIT_STOP; height follows parameters) |
-| `bpuppy_motion.set_gait("walk")` | walk (direction set by `set_direction`; speed only controls step frequency) |
-| `bpuppy_motion.set_gait("trot")` | trot (direction set by `set_direction`; speed only controls step frequency) |
-| `bpuppy_motion.set_gait("go")` | adaptive (recommended): speed≤4→walk, speed≥6→trot, all parameters interpolated between 4 and 6. ★ Under go, **all three of stride/lift/height have no effect**; only speed matters (see the warning below) |
-
-> **An unknown gait name → stop the robot; this is a deliberate fail-safe, not a defect.**
-> Inside `set_gait()`, `gait_type_t g = GAIT_STOP;` is the initial value; when the name matches no entry no assignment happens, so it falls straight through to STOP. So a single typo (e.g. `"tr"`) = the dog stops in place.
-> The reason is that **commands can genuinely get corrupted** — for example, Bluetooth transfers of Chinese text / long strings drop whole runs of bytes (code containing Chinese loses bytes over Bluetooth, so `"trot"` may arrive as `"tr"`). Here, stopping is the only safe outcome, better than guessing a gait from a corrupted string.
-> An unknown name prints `⚠ 未知步态 "xxx" → 停车` on the REPL.
+> ⭐ **The only exception: `0x3F` announce voltage** — on receiving it the firmware **automatically** sends
+> an "announce number" frame to the CI-33T with the battery percentage (`AA 55 72 <pct> 55 AA`, pct from `voltage.read_pct()`).
+> Reason for the exception: it is "reading out the firmware's own battery measurement" — an announcement of the firmware's own state, not motion/pose;
+> and if left to user code, the sole source of truth for voltage is in the C layer, unreachable from Python. **No user code required.**
 >
-> *The device prints these messages in Chinese.*
+> - **Platform prerequisite**: the CI-33T "Serial Input" (串口输入) must have **entries for 0–100** matching the `AA 55 72 <data> 55 AA` frame,
+>   otherwise the frame arrives but there is nothing to play (see §3.2.2 of the voice event system in [AGENTS.md](../AGENTS.md)).
+> - **Unconditional**: the `voiceWhenVolt` event **still** registers as usual. So if the user program also contains a
+>   "when receive [report voltage]" block, **the firmware announcement and the user action both fire** (it sounds like it reports twice).
+> - If no battery reading is available it announces **0** and prints a one-line log explaining why.
 
-### 1.2.1 Run Modes (automatic switching)
-
-The system has **three run modes**, switched automatically by the C-layer state machine; **no manual operation needed**:
-
-| Mode | Value | Description |
-|------|-----|------|
-| IDLE | 0 | Not yet initialized after power-on (brief) |
-| POSE | 1 | Pose mode: Python drives the servos (crouch/sit/stand/custom) |
-| MOTION | 2 | Motion mode: C layer controls at 50Hz (go/walk/trot/stop) |
-
-**Automatic switching rules:**
-- **Entering MOTION**: `set_gait('go'/'walk'/'trot'/'stop')` → switches to motion mode automatically
-- **Entering POSE**: Python writes to the servos (`set_angle`/`group_commit`/`cal`) → switches to pose mode automatically
-- Query the current mode: `bpuppy_motion.get_mode()`
-
-**Stop (GAIT_STOP) vs stand (POSE_STAND):**
-
-| | `set_gait('stop')` | `poses.stand()` |
-|---|---|---|
-| Mode | MOTION | POSE |
-| Controller | C-layer IK | Python IK |
-| Height | Follows the `set_params` height | Fixed at 70mm |
-| Purpose | Stop and stand | Standing in the pose domain |
-
-### 1.2.2 Parameter Validation (out-of-range rejected)
-
-`set_params` validates automatically when setting parameters: **if any value is out of range or the combination interferes, the whole group is rejected and existing values are kept** (a notice is printed on the REPL, return value `False`).
-**Speed takes no part in the geometric check** (only a 0~10 range check); it is set by the separate `set_speed`.
-
-| Parameter | Condition | Rejection reason |
-|------|---------|---------|
-| **Speed** | 0 ~ 10 | Out of range |
-| **Stride** | \|stride\| ≤ 2×body_half_l×0.85 ≈ **106mm** | Front/rear foot interference |
-| **Height** | Nominally `height ≥ 15mm`, but in practice **the hip angle binds first** (≈ **20.6mm** with default parameters) | Too low: leg-fold interference / hip angle exceeded |
-| **Lift** | height - lift ≥ 0 | Excessive lift (foot end above the hip) |
-| **Hip/knee angle** | Walks the actual swing-phase foot trajectory; at every point hip∈[0,180]°, knee∈[10,170]° | Out of limits (including the lift peak) |
-
-**Foot trajectory walk-through** (the core of the hip/knee check), sampled at `ease = 0, 0.25, 0.5, 0.75, 1.0`:
-
-```
-x = -|stride|/2 + |stride|·ease + center_offset
-z = height - lift·sin(ease·π)
-```
-
-IK is solved for all 4 legs (left/right × front/rear) and the hip/knee angles are checked against the limits; **a single point out of range rejects the whole set**.
-
-> The check involves only the **three parameters stride / height / lift**; speed gets its own 0~10 range check and takes no part in the geometry.
-> Lowering the height requires reducing the lift (e.g. height=60→lift≤20, height=50→lift≤10), otherwise the hip angle exceeds its limit and gets rejected. The validation log shows which leg and which angle.
-> Defaults: speed=2.5, stride=70, height=70, lift=30.
-
----
-
-
-## 2. Communication
-
-### 2.1 Serial Communication — bpuppy_uart
-
-**UART2 (default communication port)** — GPIO 19=TX, 20=RX; connects to the CI-33T voice module / micro:bit. See the UART2 section of [硬件连接.md](../PCB/硬件连接.md).
-
-```python
-import bpuppy_uart
-bpuppy_uart.init(2, 19, 20, 9600)     # UART2, TX=19, RX=20 (9600 matches the on-board voice module; micro:bit often uses 115200)
-bpuppy_uart.send(b"hello")            # Send bytes
-bpuppy_uart.sendline("AT")            # Send a string + newline
-data = bpuppy_uart.read(64)           # Read bytes (non-blocking)
-n = bpuppy_uart.any()                 # Bytes available in the buffer
-```
-
-> ⚠ Changing the baud rate changes **the UART2 link itself** (the on-board voice module runs at 9600) — to restore voice:
-> `import voice; voice.stop(); voice.start()`.
-
-**UART1 (camera-shared port)** — GPIO 4=TX, 5=RX; **shares pins with the camera SCCB SDA/SCL — usable when not taking photos**.
-
-```python
-import bpuppy_uart
-bpuppy_uart.u1_init(4, 5, 115200)      # TX=4, RX=5
-bpuppy_uart.u1_send(b"hello")
-bpuppy_uart.u1_sendline("AT")
-data = bpuppy_uart.u1_read(64)
-n = bpuppy_uart.u1_any()
-```
-
-| Call example | Description |
-|------|------|
-| `bpuppy_uart.init(2, 19, 20, 9600)` | Initialize UART2 (num, tx, rx, baud) |
-| `bpuppy_uart.send(b"hello")` | Send bytes or str |
-| `bpuppy_uart.read(64)` | Read up to 64 bytes (non-blocking) |
-| `bpuppy_uart.any()` | Number of readable bytes in the buffer |
-| `bpuppy_uart.sendline("AT")` | Send a string + CRLF |
-| `bpuppy_uart.stop()` | Stop UART2 (releases the peripheral; can init again) |
-| `bpuppy_uart.u1_init(17, 18, 115200)` | Initialize UART1 (camera-shared pins) |
-| `bpuppy_uart.u1_send(b"hello")` / `u1_read(n)` / `u1_any()` / `u1_sendline(s)` | The UART1 equivalents |
-| `bpuppy_uart.u1_stop()` | Stop UART1 (releases the peripheral; can init again) |
-
-> Both are **initialized manually** and do not start automatically at power-on (to avoid fighting the camera for the pins).
-
-**Voice control (CI-33T module, on by default at power-on)** — implemented in `frozen/voice.py`; `import voice` automatically starts UART2 (**9600 baud**) and polls it in the background. CI-33T wiring: **PA2(TX)→GPIO20(UART2 RX), PA3(RX)←GPIO19(UART2 TX)**, 9600 baud (see [硬件连接.md](../PCB/硬件连接.md) for details).
-
-> ⚠ **GPIO19/20 = USB_D-/USB_D+; TinyUSB must be disabled to use them as UART2** (root cause measured 2026-08-19):
-> On the ESP32-S3, GPIO19=USB_D- and GPIO20=USB_D+ are **native USB pins**. The MicroPython component enables **TinyUSB CDC** by default (`usb_init()` in `mpy_startup.c` → `tinyusb_driver_install()`), which initializes the USB-OTG PHY at startup and **takes over GPIO19/20**. Symptoms:
-> - `machine.Pin(19)` has no effect, and UART2 TX produces no waveform on GPIO19 (invisible on a scope)
-> - Measured pin levels are the USB idle state: **D-(19) low, D+(20) high**
-> - Downstream (GPIO20 receiving) occasionally works (the input path survives); upstream (GPIO19 transmitting) fails completely
->
-> **Fix (firmware customization)**: comment out the `usb_init()` call in `components/mr9you__micropython-helper/mpy_startup.c` to skip TinyUSB initialization; GPIO19/20 return to plain GPIO for UART2. **USB-CDC virtual serial is therefore unavailable — this is not a feature that can be turned on**: the two pins belong to the voice module, and restoring USB serial means giving up UART2 (REPL/flashing go over UART0=COM14 and BLE goes over RF, both unaffected).
-
-Protocol: **upstream** = `AA 55 <CMD> <PARAM> 55 AA`; **downstream** = **fixed-length 4-byte frames, two kinds**.
+**Protocol (byte level — only needed for troubleshooting, or when configuring the module yourself)**: **upstream** = `AA 55 <CMD> <PARAM> 55 AA`; **downstream** = **fixed-length 4-byte frames, two kinds**.
 
 **Downstream (CI-33T → this system)** — two frame kinds, distinguished by the **first byte's value range**:
 
@@ -332,29 +254,6 @@ so frames split apart or stuck together by the serial stream don't affect parsin
 ⭐ **For bark-type sounds the first byte is uniformly `0x70`; the 4th number selects the actual sound** — to add a new sound, change the 4th number,
 matching the `SND_xxx` constants in the firmware's `voice.py`.
 
-```python
-import voice
-voice.play('汪汪')      # Play a preset sound (woof/whimper; mapping in voice.SND_WANG/SND_YING)
-voice.say(0x70, 1)      # Send bark sound #1 = woof woof (AA 55 70 01 55 AA)
-voice.say(0x70, 2)      # Send bark sound #2 = whimper (AA 55 70 02 55 AA)
-voice.SoundAngle        # Last sound-source angle (deg, 0-180); -1 = none received since boot
-voice.on_cmd(0x30, lambda: print("stop command received"))   # Register a callback
-voice.stop()            # Stop the background polling
-```
-
-> ⚠ **Events only — no built-in actions**: on receiving a voice command the firmware **only prints + fires event callbacks** (KittenBlock event blocks); all actions are programmed by the user in KittenBlock.
->
-> ⭐ **The only exception: `0x3F` announce voltage** — on receiving it the firmware **automatically** sends
-> an "announce number" frame to the CI-33T with the battery percentage (`AA 55 72 <pct> 55 AA`, with pct from `voltage.read_pct()`).
-> Reason for the exception: it is "reading out the firmware's own battery measurement" — an announcement of the firmware's own state, not motion/pose;
-> and if left to user code, the sole source of truth for voltage is in the C layer, unreachable from Python. **No user code required.**
->
-> - **Platform prerequisite**: the CI-33T "Serial Input" (串口输入) must have **entries for 0–100** matching the `AA 55 72 <data> 55 AA` frame,
->   otherwise the frame arrives but there is nothing to play (see §3.2.2 of the voice event system "语音事件系统" in [AGENTS.md](../AGENTS.md)).
-> - **Unconditional**: the `voiceWhenVolt` event **still** registers as usual. So if the user program also contains a
->   "when receive [report voltage]" block, **the firmware announcement and the user action both fire** (it sounds like it reports twice).
-> - If no battery reading is available it announces **0** and prints a one-line log explaining why.
-
 **CI-33T side configuration (the 智能公元 platform)**: under "Offline Command Words & Responses Customization" (离线命令词与应答语自定义) configure a **serial send** for each command word ("forward", "stop", …) that emits the corresponding **command frame** `BB <CMD> 00 EE` (e.g. forward = `BB 31 00 EE`; see the CMD table above); **leave the sound-source angle output as `<angle> 00 00 00` — do not change it** (change it and parsing breaks). To make this system emit sound, configure a "Serial Input" (串口输入) entry matching the `AA 55 <data> 55 AA` frame to trigger the matching sound/announcement. Set both sides to 9600 baud.
 
 > ⚠ **The module side and the firmware must use the same command-frame format** (4 bytes, `BB <CMD> 00 EE`): the firmware does not recognize a 2-byte command
@@ -362,8 +261,65 @@ voice.stop()            # Stop the background polling
 > So before flashing the new firmware, update the platform side's 14 command outputs to `BB <CMD> 00 EE`;
 > or accept "flash first, voice commands unresponsive in the meantime" — they recover once the platform side is updated.
 
+**Background: why GPIO19/20 can serve as UART2 (and why USB-CDC is unavailable)**
 
-### 2.2 Power-On Scripts
+> ⚠ **GPIO19/20 = USB_D-/USB_D+; TinyUSB must be disabled to use them as UART2** (root cause measured 2026-08-19):
+> On the ESP32-S3, GPIO19=USB_D- and GPIO20=USB_D+ are **native USB pins**. The MicroPython component enables **TinyUSB CDC** by default (`usb_init()` in `mpy_startup.c` → `tinyusb_driver_install()`), which initializes the USB-OTG PHY at startup and **takes over GPIO19/20**. Symptoms:
+> - `machine.Pin(19)` has no effect, and UART2 TX produces no waveform on GPIO19 (invisible on a scope)
+> - Measured pin levels are the USB idle state: **D-(19) low, D+(20) high**
+> - Downstream (GPIO20 receiving) occasionally works (the input path survives); upstream (GPIO19 transmitting) fails completely
+>
+> **Fix (firmware customization)**: comment out the `usb_init()` call in `components/mr9you__micropython-helper/mpy_startup.c` to skip TinyUSB initialization; GPIO19/20 return to plain GPIO for UART2. **USB-CDC virtual serial is therefore unavailable — this is not a feature that can be turned on**: the two pins belong to the voice module, and restoring USB serial means giving up UART2 (REPL/flashing go over UART0=COM14 and BLE goes over RF, both unaffected).
+
+
+### 2.2 Serial Communication — bpuppy_uart
+
+**UART1 · external extension port** — GPIO 4=TX, 5=RX; **shares pins with the camera SCCB SDA/SCL — usable when not taking photos**.
+
+```python
+import bpuppy_uart
+bpuppy_uart.u1_init(4, 5, 115200)      # TX=4, RX=5
+bpuppy_uart.u1_send(b"hello")
+bpuppy_uart.u1_sendline("AT")
+data = bpuppy_uart.u1_read(64)
+n = bpuppy_uart.u1_any()
+```
+
+| Call example | Description |
+|------|------|
+| `bpuppy_uart.u1_init(4, 5, 115200)` | Initialize UART1 (tx, rx, baud) |
+| `bpuppy_uart.u1_send(b"hello")` | Send bytes or str |
+| `bpuppy_uart.u1_read(64)` | Read up to 64 bytes (non-blocking) |
+| `bpuppy_uart.u1_any()` | Number of readable bytes in the buffer |
+| `bpuppy_uart.u1_sendline("AT")` | Send a string + CRLF |
+| `bpuppy_uart.u1_stop()` | Stop UART1 (releases the peripheral; can init again) |
+
+> Manual init; it does not start automatically at power-on — the pins are shared with the camera (GPIO4/5), so it is usable only when not taking photos.
+
+**UART2 · direct port (backup, rarely needed)** — occupied by the on-board voice module: `voice` already opened it at 9600 at power-on, so **calling `bpuppy_uart.init(2, …)` again is a no-op** (the driver prints "UART2 already initialized" and returns — even the baud rate cannot be changed); `read()` also competes with the voice background polling for bytes. So this `init / send / read / any / stop` set is only useful in two cases: **replacing the voice module with another serial device** (micro:bit etc.), or **stopping voice and doing your own raw I/O**.
+
+```python
+import bpuppy_uart, voice
+voice.stop()                          # stop the voice polling (otherwise it steals the bytes you read)
+bpuppy_uart.stop()                    # close the voice 9600 link
+bpuppy_uart.init(2, 19, 20, 115200)   # reopen for the new device (TX=19, RX=20)
+bpuppy_uart.send(b"hello")
+data = bpuppy_uart.read(64)
+```
+
+| Call example | Description |
+|------|------|
+| `bpuppy_uart.init(2, 19, 20, 9600)` | Initialize UART2 (num, tx, rx, baud) |
+| `bpuppy_uart.send(b"hello")` | Send bytes or str |
+| `bpuppy_uart.read(64)` | Read up to 64 bytes (non-blocking) |
+| `bpuppy_uart.any()` | Number of readable bytes in the buffer |
+| `bpuppy_uart.sendline("AT")` | Send a string + CRLF |
+| `bpuppy_uart.stop()` | Stop UART2 (releases the peripheral; can init again) |
+
+> To restore voice: `bpuppy_uart.stop()` → `voice.stop()` → `voice.start()` (`voice.start()` re-inits 9600; or simply reset the board).
+
+
+### 2.3 Power-On Scripts
 
 Every boot, `frozen/main.py` looks for these power-on scripts on the board: **if the file exists it runs; if you delete it, nothing happens**.
 So the file itself is the switch — no need to rebuild the firmware or type commands; it takes effect at the next power-on.

@@ -11,8 +11,6 @@
 - [一、运动](#一运动)
   - [1.1 姿态设置（poses）](#11-姿态设置poses)
   - [1.2 运动设置（bpuppy_motion）](#12-运动设置bpuppy_motion)
-    - [1.2.1 运行模式（自动切换）](#121-运行模式自动切换)
-    - [1.2.2 参数校验（超限拒绝）](#122-参数校验超限拒绝)
 - [二、串口通信与语音功能](#二串口通信与语音功能)
   - [2.1 与语音模块通信](#21-与语音模块通信)
   - [2.2 串口通信（bpuppy_uart）](#22-串口通信bpuppy_uart)
@@ -116,7 +114,6 @@ bpuppy_motion.set_gait("walk")
 | `bpuppy_motion.set_speed(2.5)` | 2.5 | **步频** 0~10 |
 | `bpuppy_motion.set_turn(0)` | 0 | 转弯率 -1~+1。负数左转，正数右转，0为直行。靠两侧差速来实现转弯功能：±1 时，两侧腿反向运动，原地转弯；±0.5 时，一侧腿运动，另一侧原地踏步。 |
 | `bpuppy_motion.set_body_pose(0, 0)` | 0, 0 | **(俯仰, 横滚)** 身体倾角 (°)。**无 IMU 参与**（详解见附文）|
-
 | `bpuppy_motion.set_center_spacing(0)` | 0 |**不常用参数**。前后腿步长中点间距的修正参数。（详解见附文） |
 | `bpuppy_motion.set_sway(0)` | 0 | **不常用参数**。walk 步态下的摆动量。(详解见附文)|
 | `bpuppy_motion.set_omega(2.0)` | 2.0 |**不常用参数** 基准角频率 (rad/s)，调**步态快慢**：周期 = 2π/(omega × speed)。|
@@ -153,6 +150,7 @@ bpuppy_motion.set_direction(1)           # ① 定方向 (+1 前 / -1 后, 上�
 bpuppy_motion.set_speed(2.5)             # ② 定步频 0~10
 bpuppy_motion.set_params(70, 30, 70)     # ③ 高级参数三兄弟: 步长幅度 / 抬脚高度 / 站立高度
 bpuppy_motion.set_gait("go")             # ④ 选步态，开始运动
+```
 
 **实测最优参数:**
 
@@ -172,7 +170,6 @@ bpuppy_motion.set_gait("trot")
 bpuppy_motion.set_params(70, 30, 70)      # 步长/抬腿/身高
 bpuppy_motion.set_speed(2.5)
 bpuppy_motion.set_gait("walk")
-```
 ```
 
 
