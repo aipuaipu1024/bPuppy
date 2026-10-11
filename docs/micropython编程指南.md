@@ -9,11 +9,10 @@
 - [〇、速查](#〇速查)
   - [快速上手（常用运动组合）](#快速上手常用运动组合)
 - [一、运动](#一运动)
-  - [1.1 运动指令 bpuppy_motion](#11-运动指令-bpuppy_motion)
-    - [1.1.1 运行模式（自动切换）](#111-运行模式自动切换)
-    - [1.1.2 参数校验（超限拒绝）](#112-参数校验超限拒绝)
-  - [1.2 站立自平衡 balance](#12-站立自平衡-balance)
-  - [1.3 姿态设置（poses）](#13-姿态设置poses)
+  - [1.1 姿态设置（poses）](#11-姿态设置poses)
+  - [1.2 运动设置（bpuppy_motion）](#12-运动设置bpuppy_motion)
+    - [1.2.1 运行模式（自动切换）](#121-运行模式自动切换)
+    - [1.2.2 参数校验（超限拒绝）](#122-参数校验超限拒绝)
 - [二、通信](#二通信)
   - [2.1 串口通信 bpuppy_uart](#21-串口通信-bpuppy_uart)
   - [2.2 上电开关文件](#22-上电开关文件)
@@ -27,8 +26,9 @@
   - [5.2 IMU 校准（陀螺 + 加速度计）](#52-imu-校准陀螺--加速度计)
   - [5.3 磁力计校准 calib_mag](#53-磁力计校准-calib_mag)
   - [5.4 航向锁定 heading_anchor](#54-航向锁定-heading_anchor)
-  - [5.5 电池电压 bpuppy_adc](#55-电池电压-bpuppy_adc)
-  - [5.6 扩展舵机 PWM_EXT](#56-扩展舵机-pwm_ext)
+  - [5.5 站立自平衡 balance](#55-站立自平衡-balance)
+  - [5.6 电池电压 bpuppy_adc](#56-电池电压-bpuppy_adc)
+  - [5.7 扩展舵机 PWM_EXT](#57-扩展舵机-pwm_ext)
 - [六、PC 端工具](#六pc-端工具)
   - [6.1 串口拍照 capture.py](#61-串口拍照-capturepy)
 - [附录 · 编译 / 烧录 / 串口](#附录--编译--烧录--串口)
@@ -60,7 +60,22 @@ bpuppy_motion.set_gait("walk")
 
 
 ## 一、运动
-### 1.1 运动指令 bpuppy_motion
+
+### 1.1 姿态设置（poses）
+
+`poses` 的几个姿态动作会**自动切到姿态模式 (POSE)** —— Python 直接写舵机（模式切换见 [§1.2.1](#121-运行模式自动切换)）。全部是固定角度 / 固定高度。
+
+| 调用 | 说明 |
+|------|------|
+| `poses.crouch()` | 蹲伏 (固定角度) |
+| `poses.sit()` | 猫坐 |
+| `poses.play()` | 邀玩 (前低后高 + 4Hz 摇臀 8 次) |
+| `poses.wave()` | 挥手 (坐下 + 右前膝摆动 3 次, 完成回坐) |
+| `poses.stand()` | 站立 (POSE_STAND, 固定高度) |
+
+> 写任意角度 / 缓动 / 正弦摆动（`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`）见 [§5.7 扩展舵机](#57-扩展舵机-pwm_ext) —— 主舵机与扩展舵机同一套 API。
+
+### 1.2 运动设置（bpuppy_motion）
 
 **函数（调用即用）:**
 
@@ -93,6 +108,7 @@ bpuppy_motion.set_gait("walk")
 **实测最优参数:**
 
 ```python
+import bpuppy_motion
 # 最快
 bpuppy_motion.set_params(70, 10, 60)      # 步长/抬腿/身高 (一次设完, 顺序无所谓)
 bpuppy_motion.set_speed(8.5)              # 步频
@@ -143,7 +159,7 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 > （蓝牙传含中文的代码会整段丢字节，`"trot"` 可能传成 `"tr"`），此时停车是唯一安全的结局，好过拿损坏的字符串去猜步态。
 > 未知名字会在 REPL 打印 `⚠ 未知步态 "xxx" → 停车`。
 
-### 1.1.1 运行模式（自动切换）
+### 1.2.1 运行模式（自动切换）
 
 系统有**三种运行模式**，由 C 层状态机自动切换，**无需手动操作**：
 
@@ -167,7 +183,7 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 | 高度 | 随 `set_params` 高度 | 固定 70mm |
 | 用途 | 停止站好 | 姿态区站立 |
 
-### 1.1.2 参数校验（超限拒绝）
+### 1.2.2 参数校验（超限拒绝）
 
 `set_params` 设置参数时自动校验，**超限/干涉则整组拒绝写入并保持原值**（REPL 输出提示，返回值 `False`）。
 **速度不参与几何判断**（仅 0~10 范围检查），它由独立的 `set_speed` 设置。
@@ -196,70 +212,6 @@ z = height - lift·sin(ease·π)
 > ⚠ 参数互相依赖时注意**设置顺序**：例 `(stride=70, lift=30, height=45)` 在间距 0 下会被拒（摆动中点髋角超限），要先设一个能过的组合（如 lift=1）→ 设间距 → 再设目标参数。
 > 降低身高时需减小抬腿（如 height=60→lift≤20，height=50→lift≤10），否则髋角超限被拒。校验日志显示具体哪条腿和角度。
 > 默认参数：speed=2.5, stride=70, height=70, lift=30。
-
-### 1.2 站立自平衡 balance
-
-绕过运动任务，直接舵机控制。增量式 PID，50Hz 闭环。`start()` 会自动将磁力计融合切为「只修 yaw」模式（`set_mag_fusion(False)`），保证 roll/pitch 水平准确，`stop()` 时恢复。
-
-> ⚠ `start()` 会自动初始化 IMU，但**刚 init 时 AHRS 未收敛就记录零点，可能导致自平衡发散**。建议**先手动初始化 IMU 并等姿态稳定**再启动：
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # 先初始化 IMU (上电初期可能需重试)
-
-import time
-time.sleep_ms(2000)                        # 等 AHRS 收敛
-
-import balance
-balance.start()                                  # ← 三选一 (默认参数)
-# balance.start(kp=0.06, kd=0.2)                 # 自定义 PD
-# balance.start(kp=0.06, ki=0.001, kd=0.5)       # 自定义 PID
-```
-
-| 参数 | 默认 | 含义 |
-|------|------|------|
-| kp | 0.06 | 比例增益 |
-| ki | 0.0 | 积分增益 |
-| kd | 0.43 | 微分增益 |
-| deadband | 0.5 | 死区 (°) |
-| max_body | 30.0 | 身体倾角上限 (°) |
-| height | 60.0 | 目标中心高度 (mm) |
-
-**停止:**
-
-```python
-import balance
-balance.stop()
-```
-
-> balance 的 `start()` 会通过写舵机自动切入姿态模式（POSE），**Ctrl-C 中断后**需手动 `balance.stop()`（内部 `set_gait("stop")` 恢复运动）恢复。
-
-**串口输出:**
-
-```
-IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
-```
-
-| 字段 | 含义 |
-|------|------|
-| IMU P/R | IMU 姿态角 (Pitch/Roll) |
-| Err Pe/Re | 误差 (初始−当前) |
-| Inc iP/iR | 本帧补偿增量 |
-| Tar Pt/Rt | 目标身体倾角 |
-
-### 1.3 姿态设置（poses）
-
-`poses` 的几个姿态动作会**自动切到姿态模式 (POSE)** —— Python 直接写舵机（模式切换见 [§1.1.1](#111-运行模式自动切换)）。全部是固定角度 / 固定高度。
-
-| 调用 | 说明 |
-|------|------|
-| `poses.crouch()` | 蹲伏 (固定角度) |
-| `poses.sit()` | 猫坐 |
-| `poses.play()` | 邀玩 (前低后高 + 4Hz 摇臀 8 次) |
-| `poses.wave()` | 挥手 (坐下 + 右前膝摆动 3 次, 完成回坐) |
-| `poses.stand()` | 站立 (POSE_STAND, 固定高度) |
-
-> 写任意角度 / 缓动 / 正弦摆动（`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`）见 [§5.6 扩展舵机](#56-扩展舵机-pwm_ext) —— 主舵机与扩展舵机同一套 API。
 
 ---
 
@@ -697,7 +649,57 @@ anc.set()                  # 无参 = 全部恢复缺省
 （不用再手动点「初始化 IMU」；点了也只是空调用，幂等。）
 
 
-### 5.5 电池电压 bpuppy_adc
+### 5.5 站立自平衡 balance
+
+绕过运动任务，直接舵机控制。增量式 PID，50Hz 闭环。`start()` 会自动将磁力计融合切为「只修 yaw」模式（`set_mag_fusion(False)`），保证 roll/pitch 水平准确，`stop()` 时恢复。
+
+> ⚠ `start()` 会自动初始化 IMU，但**刚 init 时 AHRS 未收敛就记录零点，可能导致自平衡发散**。建议**先手动初始化 IMU 并等姿态稳定**再启动：
+
+```python
+import bpuppy_imu
+bpuppy_imu.init(0, 14, 21, 0x68)      # 先初始化 IMU (上电初期可能需重试)
+
+import time
+time.sleep_ms(2000)                        # 等 AHRS 收敛
+
+import balance
+balance.start()                                  # ← 三选一 (默认参数)
+# balance.start(kp=0.06, kd=0.2)                 # 自定义 PD
+# balance.start(kp=0.06, ki=0.001, kd=0.5)       # 自定义 PID
+```
+
+| 参数 | 默认 | 含义 |
+|------|------|------|
+| kp | 0.06 | 比例增益 |
+| ki | 0.0 | 积分增益 |
+| kd | 0.43 | 微分增益 |
+| deadband | 0.5 | 死区 (°) |
+| max_body | 30.0 | 身体倾角上限 (°) |
+| height | 60.0 | 目标中心高度 (mm) |
+
+**停止:**
+
+```python
+import balance
+balance.stop()
+```
+
+> balance 的 `start()` 会通过写舵机自动切入姿态模式（POSE），**Ctrl-C 中断后**需手动 `balance.stop()`（内部 `set_gait("stop")` 恢复运动）恢复。
+
+**串口输出:**
+
+```
+IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
+```
+
+| 字段 | 含义 |
+|------|------|
+| IMU P/R | IMU 姿态角 (Pitch/Roll) |
+| Err Pe/Re | 误差 (初始−当前) |
+| Inc iP/iR | 本帧补偿增量 |
+| Tar Pt/Rt | 目标身体倾角 |
+
+### 5.6 电池电压 bpuppy_adc
 
 电池分压接 **GPIO3 = ADC1_CH2** (ADC1 在 BLE/WiFi 下可用) → 启用 (`BPUPPY_ADC_ENABLE=1`)。硬件接线见 `PCB/硬件连接.md` 电池电压测量节 (分压 51k/10k)。
 
@@ -754,7 +756,7 @@ batt_v = mv * 6.1 / 1000               # 未标定电池电压 (V), 51k/10k 分�
 ---
 
 
-### 5.6 扩展舵机 PWM_EXT
+### 5.7 扩展舵机 PWM_EXT
 
 主板预留 3 路扩展舵机输出（接第 9 个及以后的小舵机）。接线、复用脚、MCPWM 原理见 [硬件连接.md](../PCB/硬件连接.md) 的「12. PWM_EXT 扩展舵机输出」。
 

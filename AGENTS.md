@@ -1059,7 +1059,7 @@ def pycode_ok(lines):                    # lines = pycode 数组展开后的各�
    paste 模式 `Ctrl-E`…`Ctrl-D`，也不过 readline 的自动缩进。）
 
 > **同类位置**：`docs/micropython编程指南.md` 里给人手敲/粘贴的片段
-> （「1.2 站立自平衡」和「5.1 IMU 调试」那几节的代码块）带 2 行以上块体，
+> （「5.5 站立自平衡」和「5.1 IMU 调试」那几节的代码块）带 2 行以上块体，
 > 直接粘进 REPL 会踩同一条 —— 改用粘贴模式（`Ctrl-E` 粘贴，`Ctrl-D` 结束），或把块体压成 1 行。
 > **唯一的例外是 `voiceWhen[VOICE]` 那个 hat 块**（`kblock.json5:100` 的 `def voiceWhen[VOICE]()`）：
 > 它**故意靠"不闭合"**接用户叠在它下面的积木，投递路径也与普通块不同 —— **别照抄它的形状**。

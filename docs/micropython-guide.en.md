@@ -19,11 +19,10 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
 - [0. Quick Reference](#0-quick-reference)
   - [Getting Started (Common Motion Presets)](#getting-started-common-motion-presets)
 - [1. Motion](#1-motion)
-  - [1.1 Motion Commands — bpuppy_motion](#11-motion-commands--bpuppy_motion)
-    - [1.1.1 Run Modes (automatic switching)](#111-run-modes-automatic-switching)
-    - [1.1.2 Parameter Validation (out-of-range rejected)](#112-parameter-validation-out-of-range-rejected)
-  - [1.2 Stand-up Self-Balancing — balance](#12-stand-up-self-balancing--balance)
-  - [1.3 Pose Presets — poses](#13-pose-presets--poses)
+  - [1.1 Pose Settings — poses](#11-pose-settings--poses)
+  - [1.2 Motion Settings — bpuppy_motion](#12-motion-settings--bpuppy_motion)
+    - [1.2.1 Run Modes (automatic switching)](#121-run-modes-automatic-switching)
+    - [1.2.2 Parameter Validation (out-of-range rejected)](#122-parameter-validation-out-of-range-rejected)
 - [2. Communication](#2-communication)
   - [2.1 Serial Communication — bpuppy_uart](#21-serial-communication--bpuppy_uart)
   - [2.2 Power-On Scripts](#22-power-on-scripts)
@@ -37,8 +36,9 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
   - [5.2 IMU Calibration (gyro + accelerometer)](#52-imu-calibration-gyro--accelerometer)
   - [5.3 Magnetometer Calibration — calib_mag](#53-magnetometer-calibration--calib_mag)
   - [5.4 Heading Lock — heading_anchor](#54-heading-lock--heading_anchor)
-  - [5.5 Battery Voltage — bpuppy_adc](#55-battery-voltage--bpuppy_adc)
-  - [5.6 Extension Servos — PWM_EXT](#56-extension-servos--pwm_ext)
+  - [5.5 Stand-up Self-Balancing — balance](#55-stand-up-self-balancing--balance)
+  - [5.6 Battery Voltage — bpuppy_adc](#56-battery-voltage--bpuppy_adc)
+  - [5.7 Extension Servos — PWM_EXT](#57-extension-servos--pwm_ext)
 - [6. PC Tools](#6-pc-tools)
   - [6.1 Serial Photo Capture — capture.py](#61-serial-photo-capture--capturepy)
 - [Appendix · Build / Flash / Serial](#appendix--build--flash--serial)
@@ -78,7 +78,22 @@ bpuppy_motion.set_gait("walk")
 
 ## 1. Motion
 
-### 1.1 Motion Commands — bpuppy_motion
+### 1.1 Pose Settings — poses
+
+The `poses` actions **switch to pose mode (POSE) automatically** — Python drives the servos directly (mode switching: see [§1.2.1](#121-run-modes-automatic-switching)). All are fixed angles / fixed height.
+
+| Call | Description |
+|------|------|
+| `poses.crouch()` | crouch (fixed angles) |
+| `poses.sit()` | sit |
+| `poses.play()` | play (front low, rear high + 8 hip wiggles at 4 Hz) |
+| `poses.wave()` | wave (sit + right front knee swings 3 times, then back to sit) |
+| `poses.stand()` | stand (POSE_STAND, fixed height) |
+
+> Writing arbitrary angles / easing / sine oscillation (`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`) is covered in [§5.7 Extension Servos](#57-extension-servos--pwm_ext) — main and extension servos share the same API.
+
+
+### 1.2 Motion Settings — bpuppy_motion
 
 **Functions (ready to call):**
 
@@ -117,6 +132,7 @@ bpuppy_motion.set_gait("walk")
 **Measured optimal parameters:**
 
 ```python
+import bpuppy_motion
 # Fastest
 bpuppy_motion.set_params(70, 10, 60)      # stride/lift/height (all three set in one call)
 bpuppy_motion.set_speed(8.5)              # step frequency
@@ -166,7 +182,7 @@ But **direction stays independent**: go obeys `set_direction` as well.
 >
 > *The device prints these messages in Chinese.*
 
-### 1.1.1 Run Modes (automatic switching)
+### 1.2.1 Run Modes (automatic switching)
 
 The system has **three run modes**, switched automatically by the C-layer state machine; **no manual operation needed**:
 
@@ -190,7 +206,7 @@ The system has **three run modes**, switched automatically by the C-layer state 
 | Height | Follows the `set_params` height | Fixed at 70mm |
 | Purpose | Stop and stand | Standing in the pose domain |
 
-### 1.1.2 Parameter Validation (out-of-range rejected)
+### 1.2.2 Parameter Validation (out-of-range rejected)
 
 `set_params` validates automatically when setting parameters: **if any value is out of range or the combination interferes, the whole group is rejected and existing values are kept** (a notice is printed on the REPL, return value `False`).
 **Speed takes no part in the geometric check** (only a 0~10 range check); it is set by the separate `set_speed`.
@@ -215,70 +231,6 @@ IK is solved for all 4 legs (left/right × front/rear) and the hip/knee angles a
 > The check involves only the **three parameters stride / height / lift**; speed gets its own 0~10 range check and takes no part in the geometry.
 > Lowering the height requires reducing the lift (e.g. height=60→lift≤20, height=50→lift≤10), otherwise the hip angle exceeds its limit and gets rejected. The validation log shows which leg and which angle.
 > Defaults: speed=2.5, stride=70, height=70, lift=30.
-
-### 1.2 Stand-up Self-Balancing — balance
-
-Bypasses the motion task and drives the servos directly. Incremental PID, 50Hz closed loop. `start()` automatically switches magnetometer fusion to a "yaw-only" mode (`set_mag_fusion(False)`) so roll/pitch stay accurate when level; `stop()` restores it.
-
-> ⚠ `start()` initializes the IMU automatically, but **if the zero point is recorded right after init while the AHRS has not yet converged, self-balancing can diverge**. It's recommended to **initialize the IMU manually first and wait for the attitude to stabilize** before starting:
-
-```python
-import bpuppy_imu
-bpuppy_imu.init(0, 14, 21, 0x68)      # Initialize the IMU first (may need retries right after power-on)
-
-import time
-time.sleep_ms(2000)                        # Wait for the AHRS to converge
-
-import balance
-balance.start()                                  # ← pick one of the three (default parameters)
-# balance.start(kp=0.06, kd=0.2)                 # Custom PD
-# balance.start(kp=0.06, ki=0.001, kd=0.5)       # Custom PID
-```
-
-| Parameter | Default | Meaning |
-|------|------|------|
-| kp | 0.06 | Proportional gain |
-| ki | 0.0 | Integral gain |
-| kd | 0.43 | Derivative gain |
-| deadband | 0.5 | Deadband (°) |
-| max_body | 30.0 | Max body tilt (°) |
-| height | 60.0 | Target center height (mm) |
-
-**Stop:**
-
-```python
-import balance
-balance.stop()
-```
-
-> `balance.start()` switches into pose mode (POSE) automatically by writing to the servos. **After interrupting with Ctrl-C** you must call `balance.stop()` manually to recover (it calls `set_gait("stop")` internally to restore motion).
-
-**Serial output:**
-
-```
-IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
-```
-
-| Field | Meaning |
-|------|------|
-| IMU P/R | IMU attitude angles (Pitch/Roll) |
-| Err Pe/Re | Error (initial − current) |
-| Inc iP/iR | Per-frame compensation increment |
-| Tar Pt/Rt | Target body tilt |
-
-### 1.3 Pose Presets — poses
-
-The `poses` actions **switch to pose mode (POSE) automatically** — Python drives the servos directly (mode switching: see [§1.1.1](#111-run-modes-automatic-switching)). All are fixed angles / fixed height.
-
-| Call | Description |
-|------|------|
-| `poses.crouch()` | crouch (fixed angles) |
-| `poses.sit()` | sit |
-| `poses.play()` | play (front low, rear high + 8 hip wiggles at 4 Hz) |
-| `poses.wave()` | wave (sit + right front knee swings 3 times, then back to sit) |
-| `poses.stand()` | stand (POSE_STAND, fixed height) |
-
-> Writing arbitrary angles / easing / sine oscillation (`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`) is covered in [§5.6 Extension Servos](#56-extension-servos--pwm_ext) — main and extension servos share the same API.
 
 ---
 
@@ -716,7 +668,57 @@ check passes immediately and is **basically unnoticeable**.
 (No need to click "Init IMU" manually anymore; doing so is just a no-op call, idempotent.)
 
 
-### 5.5 Battery Voltage — bpuppy_adc
+### 5.5 Stand-up Self-Balancing — balance
+
+Bypasses the motion task and drives the servos directly. Incremental PID, 50Hz closed loop. `start()` automatically switches magnetometer fusion to a "yaw-only" mode (`set_mag_fusion(False)`) so roll/pitch stay accurate when level; `stop()` restores it.
+
+> ⚠ `start()` initializes the IMU automatically, but **if the zero point is recorded right after init while the AHRS has not yet converged, self-balancing can diverge**. It's recommended to **initialize the IMU manually first and wait for the attitude to stabilize** before starting:
+
+```python
+import bpuppy_imu
+bpuppy_imu.init(0, 14, 21, 0x68)      # Initialize the IMU first (may need retries right after power-on)
+
+import time
+time.sleep_ms(2000)                        # Wait for the AHRS to converge
+
+import balance
+balance.start()                                  # ← pick one of the three (default parameters)
+# balance.start(kp=0.06, kd=0.2)                 # Custom PD
+# balance.start(kp=0.06, ki=0.001, kd=0.5)       # Custom PID
+```
+
+| Parameter | Default | Meaning |
+|------|------|------|
+| kp | 0.06 | Proportional gain |
+| ki | 0.0 | Integral gain |
+| kd | 0.43 | Derivative gain |
+| deadband | 0.5 | Deadband (°) |
+| max_body | 30.0 | Max body tilt (°) |
+| height | 60.0 | Target center height (mm) |
+
+**Stop:**
+
+```python
+import balance
+balance.stop()
+```
+
+> `balance.start()` switches into pose mode (POSE) automatically by writing to the servos. **After interrupting with Ctrl-C** you must call `balance.stop()` manually to recover (it calls `set_gait("stop")` internally to restore motion).
+
+**Serial output:**
+
+```
+IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
+```
+
+| Field | Meaning |
+|------|------|
+| IMU P/R | IMU attitude angles (Pitch/Roll) |
+| Err Pe/Re | Error (initial − current) |
+| Inc iP/iR | Per-frame compensation increment |
+| Tar Pt/Rt | Target body tilt |
+
+### 5.6 Battery Voltage — bpuppy_adc
 
 The battery divider is on **GPIO3 = ADC1_CH2** (ADC1 remains usable alongside BLE/WiFi) → enabled (`BPUPPY_ADC_ENABLE=1`). For hardware wiring see the battery voltage measurement section of `PCB/硬件连接.md` (51k/10k divider).
 
@@ -773,7 +775,7 @@ batt_v = mv * 6.1 / 1000               # Uncalibrated battery voltage (V), conve
 ---
 
 
-### 5.6 Extension Servos — PWM_EXT
+### 5.7 Extension Servos — PWM_EXT
 
 The main board reserves 3 extension servo outputs (for the 9th servo and beyond). For wiring, shared pins and the MCPWM principle, see "12. PWM_EXT Extension Servo Outputs" ("12. PWM_EXT 扩展舵机输出") in [硬件连接.md](../PCB/硬件连接.md).
 
