@@ -13,6 +13,7 @@
     - [1.1.1 运行模式（自动切换）](#111-运行模式自动切换)
     - [1.1.2 参数校验（超限拒绝）](#112-参数校验超限拒绝)
   - [1.2 站立自平衡 balance](#12-站立自平衡-balance)
+  - [1.3 姿态设置（poses）](#13-姿态设置poses)
 - [二、通信](#二通信)
   - [2.1 串口通信 bpuppy_uart](#21-串口通信-bpuppy_uart)
   - [2.2 上电开关文件](#22-上电开关文件)
@@ -55,10 +56,6 @@ bpuppy_motion.set_speed(2.5)
 bpuppy_motion.set_gait("walk")
 ```
 
-> **`set_params(步长, 抬腿, 身高)` 三个值一次判、一次写**，返回值 `True`/`False` 告诉你写没写进去。
->
-> 速度是**步频**，跟腿的运动轨迹无关，所以单独一个 `set_speed(0~10)`，任何时候都能单独改，
-> 不动步长/抬腿/身高。同样返回 `True`/`False`。
 
 
 
@@ -138,11 +135,6 @@ bpuppy_motion.set_params(70, 30, 70)     # ④ 高级参数三兄弟: 步长幅�
 | `bpuppy_motion.set_gait("walk")` | 猫步 (方向由 `set_direction` 定；speed 只管步频) |
 | `bpuppy_motion.set_gait("trot")` | 小跑 (方向由 `set_direction` 定；speed 只管步频) |
 | `bpuppy_motion.set_gait("go")` | 自适应 (推荐): speed≤4→walk, speed≥6→trot, 4~6 全参数插值。★ go 下 **stride/lift/height 三个值全部无效**，只有 speed 管用（见下方警告）|
-| `poses.crouch()` | 蹲伏 (姿态模式, 固定角度) |
-| `poses.sit()` | 猫坐 (姿态模式) |
-| `poses.play()` | 邀玩 (前低后高 + 4Hz摇臀8次) |
-| `poses.wave()` | 挥手 (坐下 + 右前膝摆动 3 次, 完成回坐) |
-| `poses.stand()` | 站立 (姿态模式 POSE_STAND, 固定高度) |
 
 > **未知步态名 → 停车，这是刻意的 fail-safe，不是缺陷。**
 > `set_gait()` 内部 `gait_type_t g = GAIT_STOP;` 是初值，名字不匹配任何一项时不做赋值，
@@ -254,6 +246,20 @@ IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
 | Err Pe/Re | 误差 (初始−当前) |
 | Inc iP/iR | 本帧补偿增量 |
 | Tar Pt/Rt | 目标身体倾角 |
+
+### 1.3 姿态设置（poses）
+
+`poses` 的几个姿态动作会**自动切到姿态模式 (POSE)** —— Python 直接写舵机（模式切换见 [§1.1.1](#111-运行模式自动切换)）。全部是固定角度 / 固定高度。
+
+| 调用 | 说明 |
+|------|------|
+| `poses.crouch()` | 蹲伏 (固定角度) |
+| `poses.sit()` | 猫坐 |
+| `poses.play()` | 邀玩 (前低后高 + 4Hz 摇臀 8 次) |
+| `poses.wave()` | 挥手 (坐下 + 右前膝摆动 3 次, 完成回坐) |
+| `poses.stand()` | 站立 (POSE_STAND, 固定高度) |
+
+> 写任意角度 / 缓动 / 正弦摆动（`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`）见 [§5.6 扩展舵机](#56-扩展舵机-pwm_ext) —— 主舵机与扩展舵机同一套 API。
 
 ---
 

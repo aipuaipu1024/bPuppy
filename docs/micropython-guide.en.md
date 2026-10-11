@@ -23,6 +23,7 @@ Serial / REPL connection parameters (**115200**, CH343, over UART0) are in the "
     - [1.1.1 Run Modes (automatic switching)](#111-run-modes-automatic-switching)
     - [1.1.2 Parameter Validation (out-of-range rejected)](#112-parameter-validation-out-of-range-rejected)
   - [1.2 Stand-up Self-Balancing — balance](#12-stand-up-self-balancing--balance)
+  - [1.3 Pose Presets — poses](#13-pose-presets--poses)
 - [2. Communication](#2-communication)
   - [2.1 Serial Communication — bpuppy_uart](#21-serial-communication--bpuppy_uart)
   - [2.2 Power-On Scripts](#22-power-on-scripts)
@@ -157,11 +158,6 @@ But **direction stays independent**: go obeys `set_direction` as well.
 | `bpuppy_motion.set_gait("walk")` | walk (direction set by `set_direction`; speed only controls step frequency) |
 | `bpuppy_motion.set_gait("trot")` | trot (direction set by `set_direction`; speed only controls step frequency) |
 | `bpuppy_motion.set_gait("go")` | adaptive (recommended): speed≤4→walk, speed≥6→trot, all parameters interpolated between 4 and 6. ★ Under go, **all three of stride/lift/height have no effect**; only speed matters (see the warning below) |
-| `poses.crouch()` | crouch (pose mode, fixed angles) |
-| `poses.sit()` | sit (pose mode) |
-| `poses.play()` | play (front low, rear high + 8 hip wiggles at 4 Hz) |
-| `poses.wave()` | wave (sit + right front knee swings 3 times, then back to sit) |
-| `poses.stand()` | stand (pose mode POSE_STAND, fixed height) |
 
 > **An unknown gait name → stop the robot; this is a deliberate fail-safe, not a defect.**
 > Inside `set_gait()`, `gait_type_t g = GAIT_STOP;` is the initial value; when the name matches no entry no assignment happens, so it falls straight through to STOP. So a single typo (e.g. `"tr"`) = the dog stops in place.
@@ -269,6 +265,20 @@ IMU P+0.1 R-2.4 | Err Pe+0.0 Re+0.0 | Inc iP+0.00 iR+0.00 | Tar Pt+0.0 Rt+0.0
 | Err Pe/Re | Error (initial − current) |
 | Inc iP/iR | Per-frame compensation increment |
 | Tar Pt/Rt | Target body tilt |
+
+### 1.3 Pose Presets — poses
+
+The `poses` actions **switch to pose mode (POSE) automatically** — Python drives the servos directly (mode switching: see [§1.1.1](#111-run-modes-automatic-switching)). All are fixed angles / fixed height.
+
+| Call | Description |
+|------|------|
+| `poses.crouch()` | crouch (fixed angles) |
+| `poses.sit()` | sit |
+| `poses.play()` | play (front low, rear high + 8 hip wiggles at 4 Hz) |
+| `poses.wave()` | wave (sit + right front knee swings 3 times, then back to sit) |
+| `poses.stand()` | stand (POSE_STAND, fixed height) |
+
+> Writing arbitrary angles / easing / sine oscillation (`set_servo` / `set_step` / `commit` / `oscillate` / `get_servo_angle`) is covered in [§5.6 Extension Servos](#56-extension-servos--pwm_ext) — main and extension servos share the same API.
 
 ---
 
