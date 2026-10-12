@@ -2,7 +2,7 @@
 
 > 🌐 [English below](#buppy-robot-dog)
 
-bPuppy 是一款使用普通 MG90S 舵机的八自由度四足机器狗开源教育平台，基于 ESP32-S3，整机成本控制在 200 元以内。结构极其简单，易于动手安装制作。
+bPuppy 是一款使用普通 MG90S 舵机的八自由度四足机器狗开源教育平台，基于 ESP32-S3，整机成本控制在 300 元以内。结构极其简单，易于动手安装制作。
 
 具备 walk、trot、自适应三种四足步态，可以完成行走、转弯等运动动作，以及站立、蹲下、坐下、挥手、邀玩等姿态动作。
 
@@ -19,7 +19,7 @@ bPuppy 是一款使用普通 MG90S 舵机的八自由度四足机器狗开源教
 
 - **代码开源**（持续升级中，含物料采购清单）—— https://github.com/bobyuhit/bPuppy
 - **电路开源**（原理图 / PCB / BOM 在立创开源硬件平台，可直接下单打板）—— https://oshwhub.com/northerntree/project_fddruuyj
-- **3D 打印结构开源** —— https://makerworld.com/zh/models/3409921-bpuppy-8-dof-servo-quadruped-robot-dog
+- **3D 打印结构开源** —— https://makerworld.com.cn/zh/models/3072555-bpuppy-ba-zi-you-du-duo-ji-ji-qi-gou
 - **相关视频**（持续更新中）—— https://space.bilibili.com/404024959/lists/9244762?type=season
 
 ## KittenBlock 扩展地址速查
@@ -74,7 +74,7 @@ https://raw.githubusercontent.com/bobyuhit/bPuppy/master/bpuppy-kittenblock.zip
 
 > 🌐 [中文在上](#bpuppy-机器狗)
 
-bPuppy is an open-source educational quadruped robot dog platform built on the ESP32-S3, using ordinary MG90S servos for its eight degrees of freedom, with the complete build kept under 200 CNY. The structure is extremely simple and easy to assemble by hand.
+bPuppy is an open-source educational quadruped robot dog platform built on the ESP32-S3, using ordinary MG90S servos for its eight degrees of freedom, with the complete build kept under 45 USD. The structure is extremely simple and easy to assemble by hand.
 
 It has three quadruped gaits — walk, trot, and adaptive — and can perform locomotion actions such as walking and turning, as well as posture actions such as standing, crouching, sitting, waving, and playing.
 
