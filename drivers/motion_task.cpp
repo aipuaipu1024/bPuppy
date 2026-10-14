@@ -214,6 +214,30 @@ static float g_leg_x_land[4] = {0, 0, 0, 0};  // 落地瞬间的足端 x (前向
 static float g_leg_x_lift[4] = {0, 0, 0, 0};  // 离地瞬间的足端 x (前向约定, 未取反)
 static bool  g_leg_swing[4]  = {false, false, false, false};  // 上帧是否摆动相 (做边沿)
 
+/* ---- turn 跨 ±0.5 的单腿方向翻转 (per-leg 挂起 + 对齐窗口, 2026-10-14) ----
+ * turn 让一侧步长按 s = 1-2|turn| 缩放: |turn|<0.5 同向、=0.5 原地、>0.5 该侧倒走。
+ * 跨 0.5 时该腿 leg_stride 变号 → 相位表换一套 (walk) + x 取反 —— 两个动作都是
+ * **离散**的, 当帧生效会产生: 位置台阶 / 相位平移 0.24 周期 / 误触边沿锁存。
+ * 做法 (与全局换向 "全踩地+相位对齐" 同思路, 单腿版条件更宽):
+ *   1. 目标符号 (sign of s) 与生效符号 g_leg_dir 不一致 ⇒ **挂起**:
+ *      该腿继续按旧方向走, 幅度仍随 |s| 连续变化;
+ *   2. 等**安全窗口**: 该腿切换前(旧表 pn)与切换后(新表 pn)都落在支撑相 ——
+ *      支撑相 x 只由锚定量决定、不含相位/ease, 两边同一公式 ⇒ 位置连续;
+ *      切换前后都非摆动 ⇒ 不触发落地/离地边沿;
+ *   3. 窗口到了才翻: 更新 g_leg_dir + **取反该腿 4 个锚定量** (与 out_x=-out_x
+ *      精确抵消, 位置零跳变)。
+ * 挂起期间目标又穿回 0.5 (抖动) ⇒ 目标==生效, 挂起自动取消 (天然滞回)。
+ * trot 族两套相位表相同 (need_rev 不成立) ⇒ 窗口退化为"在支撑相即可", 更宽。
+ * ★ 顺序约束: 翻转必须在**边沿锁存之后**、foot_trajectory 之前。顺序反了,
+ *   "落地锁存的 +S/2" 会绕过取反 → 单帧跳 S 量级。离线实测 (gait_sim/
+ *   turn_flip_audit.py, 240 起始相位 × 4 场景): 现状当帧翻最坏 23.5mm;
+ *   顺序反 9.6mm; 正序 3.5mm ≈ 正常行走本身 (2.5mm)。
+ * ★ 与全局换向的关系: g_leg_dir 是"turn 缩放系数的符号", 与全局步进方向
+ *   (stride_sign) 正交 —— 全局换向不动它; 两者同帧叠加时, 每次 direction
+ *   变化都配一次该腿锚定量取反, 数学上闭合。
+ */
+static int   g_leg_dir[4]    = {1, 1, 1, 1};   // s(turn) 的**生效符号** (±1)
+
 // 限速: 往 target 方向最多走 max_step 度
 static float servo_step_toward(int ch, float target, float max_step) {
     float cur = g_smooth_angles[ch];
@@ -979,6 +1003,16 @@ static void motion_task_main(void *pvParam)
         for (int leg = 0; leg < 4; leg++) {
             float foot_x, foot_z;
 
+            // turn 的 per-leg 缩放系数 (带符号, 用实参 g_ramp_turn): 只有 turn 同侧
+            // 的那条腿会过零/变号. 不受步态分支影响 —— 站姿/回正也要用它同步
+            // g_leg_dir (见各清零处: 锚定量全 0 时改方向零代价).
+            float s_side;
+            if (g_ramp_turn >= 0.0f) {
+                s_side = (leg_side[leg] == IK_SIDE_RIGHT) ? (1.0f - g_ramp_turn * 2.0f) : 1.0f;
+            } else {
+                s_side = (leg_side[leg] == IK_SIDE_LEFT)  ? (1.0f + g_ramp_turn * 2.0f) : 1.0f;
+            }
+
             /* ★★ 回正步: 身体不动, 只有脚在动 —— 对角两两**抬起来**挪回 x=0。
              *  优先级最高 (gait=GAIT_REPOS 时下面的站立/运动分支都不该跑)。
              *
@@ -991,6 +1025,7 @@ static void motion_task_main(void *pvParam)
                 g_leg_x_land[leg] = 0.0f;
                 g_leg_x_lift[leg] = 0.0f;
                 g_leg_swing[leg]  = false;
+                g_leg_dir[leg]    = (s_side >= 0.0f) ? 1 : -1;   // 锚定量全 0, 方向直接对齐
 
                 // 本条腿属于哪一组 (0 = 先抬, 1 = 后抬; 顺序见 motion_enter_repos)
                 int grp = 0;
@@ -1037,6 +1072,7 @@ static void motion_task_main(void *pvParam)
                 g_leg_x_land[leg] = 0.0f;
                 g_leg_x_lift[leg] = 0.0f;
                 g_leg_swing[leg]  = false;   // 站姿 = 四腿全踩地
+                g_leg_dir[leg]    = (s_side >= 0.0f) ? 1 : -1;   // 锚定量全 0, 方向直接对齐
                 if (g_motion.pose_trans == 2) {
                     // 停止过渡: 从上一帧位置缓动到站姿
                     float t = g_motion.pose_timer / TRANS_TIME;
@@ -1068,20 +1104,10 @@ static void motion_task_main(void *pvParam)
                     stride_sign = (float)g_flip_sign;
                 else
                     stride_sign = g_motion.direction;
-                float leg_stride;
-                // ★ 用**实参** g_ramp_turn (运动中每帧限速; 见 RAMP_TURN_STEP):
-                //   turn 一变摆动腿的 x 当帧就跳, 限速层把它摊开成多帧.
-                if (g_ramp_turn >= 0.0f) {
-                    float s = (leg_side[leg] == IK_SIDE_RIGHT)
-                            ? (1.0f - g_ramp_turn * 2.0f) : 1.0f;
-                    leg_stride = eff_stride * s * stride_sign;
-                } else {
-                    float s = (leg_side[leg] == IK_SIDE_LEFT)
-                            ? (1.0f + g_ramp_turn * 2.0f) : 1.0f;
-                    leg_stride = eff_stride * s * stride_sign;
-                }
-                float direction = (leg_stride < 0.0f) ? -1.0f : 1.0f;
-                float abs_stride = fabsf(leg_stride);
+                // 本腿的总方向 = turn 缩放符号 (g_leg_dir, 会挂起/延迟翻转) × 全局步进方向
+                float step_sign = (stride_sign < 0.0f) ? -1.0f : 1.0f;
+                float direction = (float)g_leg_dir[leg] * step_sign;
+                float abs_stride = fabsf(eff_stride * s_side);
                 float max_stride = 2.0f * g_motion.body_half_l * 0.85f;
                 if (abs_stride > max_stride) abs_stride = max_stride;
 
@@ -1116,6 +1142,28 @@ static void motion_task_main(void *pvParam)
                     g_leg_x_land[leg] = abs_stride * 0.5f;
                 }
                 g_leg_swing[leg] = in_swing;
+
+                /* ---- turn 跨 ±0.5: 挂起 + 等支撑窗口才翻 (机制/实测见 g_leg_dir 定义处) ----
+                 * ★ 必须在**边沿锁存之后**: 边沿用旧表 pn 处理真实落地/离地事件,
+                 *   翻转随后取反锚定量; 顺序反了 "落地锁存的 +S/2" 会绕过取反 ⇒ 跳 S. */
+                if (((s_side >= 0.0f) ? 1 : -1) != g_leg_dir[leg]) {
+                    int   dn     = -g_leg_dir[leg];
+                    float dirn   = (float)dn * step_sign;
+                    bool  nr_new = (dirn < 0.0f) && (eff_duty + eff_gap < 0.50f);
+                    float off_n  = nr_new ? offsets_rev[leg] : offsets_fwd[leg];
+                    float pn_new = g_phase + off_n * TWO_PI;
+                    if (pn_new > TWO_PI) pn_new -= TWO_PI;
+                    pn_new /= TWO_PI;
+                    if (phase_norm >= eff_duty && pn_new >= eff_duty) {
+                        g_leg_dir[leg]    = dn;
+                        g_gait_b[leg]     = -g_gait_b[leg];
+                        g_leg_b_land[leg] = -g_leg_b_land[leg];
+                        g_leg_x_land[leg] = -g_leg_x_land[leg];
+                        g_leg_x_lift[leg] = -g_leg_x_lift[leg];
+                        direction  = dirn;      // 本帧改用新表/新方向
+                        phase_norm = pn_new;
+                    }
+                }
 
                 foot_trajectory(phase_norm, abs_stride,
                                 eff_height, eff_lift,
