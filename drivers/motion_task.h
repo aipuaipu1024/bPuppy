@@ -138,6 +138,8 @@ void motion_set_omega(float omega);
 bool motion_set_body_pose(float pitch, float roll);
 
 // 设置转弯系数 (-1=左, +1=右, 0=直)
+// ★ 写入的是**目标值**: 运动中喂给腿循环的实际值每帧限速跟随 (RAMP_TURN_STEP,
+//   见 motion_task.cpp 的 RAMP 段注释); 静止 (站姿/回正) 时直接对齐。
 // 返回是否原样采纳。false 有两种, **含义不同**:
 //   超限 → 已**钳位**到 ±1, 且**写入了钳位后的值** (不是拒绝)
 //   NaN  → **拒绝**, 保持原值 (NaN 能穿过两个钳位 —— 与任何数比较恒假)

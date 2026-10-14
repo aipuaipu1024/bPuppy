@@ -80,6 +80,13 @@ static const char *TAG = "motion";
  *   抬脚 25mm ≈ 27.4°、俯仰 10° ≈ 33.1°) ⇒ 典型变化量都在 0.25~0.3s 到位,
  *   与 pose_trans 的 0.3s 同量级.
  *
+ * ★ 转弯率**在此列** (2026-10-14): 原以为"它只是左右步长的缩放比例, 不用管" —— 那
+ *   只对**支撑腿**成立 (锚定吸收). **摆动腿**的 x = x_lift + (S/2 - x_lift)*ease 里
+ *   S 当帧生效, turn 一变就跳, 台阶 ∝ eff_stride*Δturn. 航向锁定闭环 20Hz 频繁写
+ *   turn 把它放大成可见现象, 这一层把它按帧摊开.
+ *   与闭环低通 (heading_follow 的 TURN_LPF_A) 的分工: **低通压噪声的抖动, 限速压
+ *   变化的速度** —— 噪声幅度远小于限速步长, 低通不能省.
+ *
  * ★ 步长**不在此列** —— 支撑相锚定之后它是"身体快慢"而不是"足端位置", 改了脚不会挪.
  * ★ 顺带治一个: GO 的抬脚由 speed 插值算出, 而 speed 每半周期能变 ±3 ⇒ 抬脚一次能跳
  *   25mm (速度跨过 4~6 时). 这一层放在 GO 分支**之后**, 那一项也一并抹平.
@@ -88,6 +95,8 @@ static const char *TAG = "motion";
 #define RAMP_LIFT_STEP     2.0f    // mm/帧  25mm → 13 帧 (0.25s)
 #define RAMP_CENTER_STEP   1.5f    // mm/帧  20mm → 14 帧 (0.28s)
 #define RAMP_ATTITUDE_STEP 0.7f    // deg/帧 10°  → 15 帧 (0.3s)
+#define RAMP_TURN_STEP     0.04f   // /帧   turn 0→1 约 25 帧 (0.5s);
+                                   // 摆动腿单帧台阶 = eff_stride*0.04 ≈ 2.8mm@S70 / 4.2mm@S106
 
 /* ---- 相位联动摆动 (body sway) ----
  * 为什么需要: walk 抬起任意一条腿时, 支撑三足的斜边几乎从机身中心穿过 ——
@@ -267,6 +276,7 @@ static float g_ramp_sway   = 0.0f;   // 摆动幅值实参 (mm, 永远斜坡, �
 static float g_sway_dir    = 1.0f;   // 摆动方向符号实参 (±1, 换向时斜坡过渡)
 static float g_ramp_pitch  = 0.0f;
 static float g_ramp_roll   = 0.0f;
+static float g_ramp_turn   = 0.0f;   // 转弯率实参 (运动中每帧限速; 见 RAMP_TURN_STEP)
 
 /* ---- 本帧**实际用**的步态参数 (只读上报) ----
  *
@@ -701,6 +711,7 @@ static void motion_task_main(void *pvParam)
             g_ramp_spacing = eff_center_spacing;
             g_ramp_pitch   = g_motion.body_pitch;
             g_ramp_roll    = g_motion.body_roll;
+            g_ramp_turn    = g_motion.turn;
         } else {
             g_ramp_height  = ramp_to(g_ramp_height,  eff_height,              RAMP_HEIGHT_STEP);
             g_ramp_lift    = ramp_to(g_ramp_lift,    eff_lift,                RAMP_LIFT_STEP);
@@ -708,6 +719,7 @@ static void motion_task_main(void *pvParam)
             g_ramp_spacing = ramp_to(g_ramp_spacing, eff_center_spacing,      RAMP_CENTER_STEP);
             g_ramp_pitch   = ramp_to(g_ramp_pitch,   g_motion.body_pitch,     RAMP_ATTITUDE_STEP);
             g_ramp_roll    = ramp_to(g_ramp_roll,    g_motion.body_roll,      RAMP_ATTITUDE_STEP);
+            g_ramp_turn    = ramp_to(g_ramp_turn,    g_motion.turn,           RAMP_TURN_STEP);
         }
         eff_height = g_ramp_height;
         eff_lift   = g_ramp_lift;
@@ -1057,13 +1069,15 @@ static void motion_task_main(void *pvParam)
                 else
                     stride_sign = g_motion.direction;
                 float leg_stride;
-                if (g_motion.turn >= 0.0f) {
+                // ★ 用**实参** g_ramp_turn (运动中每帧限速; 见 RAMP_TURN_STEP):
+                //   turn 一变摆动腿的 x 当帧就跳, 限速层把它摊开成多帧.
+                if (g_ramp_turn >= 0.0f) {
                     float s = (leg_side[leg] == IK_SIDE_RIGHT)
-                            ? (1.0f - g_motion.turn * 2.0f) : 1.0f;
+                            ? (1.0f - g_ramp_turn * 2.0f) : 1.0f;
                     leg_stride = eff_stride * s * stride_sign;
                 } else {
                     float s = (leg_side[leg] == IK_SIDE_LEFT)
-                            ? (1.0f + g_motion.turn * 2.0f) : 1.0f;
+                            ? (1.0f + g_ramp_turn * 2.0f) : 1.0f;
                     leg_stride = eff_stride * s * stride_sign;
                 }
                 float direction = (leg_stride < 0.0f) ? -1.0f : 1.0f;
@@ -1230,6 +1244,7 @@ void motion_task_start(void)
     g_ramp_sway    = 0.0f;   // 摆动从 0 淡入 (起步时步长系数本来也是 0, 目标就是 0)
     g_ramp_pitch   = g_motion.body_pitch;
     g_ramp_roll    = g_motion.body_roll;
+    g_ramp_turn    = g_motion.turn;
     xTaskCreatePinnedToCore(motion_task_main, "motion", MOTION_STACK,
                             NULL, MOTION_PRIORITY, &g_task_handle, MOTION_CORE);
 }
