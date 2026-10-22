@@ -2,6 +2,12 @@
 	"folders": [
 		{
 			"path": "."
+		},
+		{
+			"path": "../../../../bTool"
+		},
+		{
+			"path": "../../../../HUSKEYLENS"
 		}
 	],
 	"settings": {}
