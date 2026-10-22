@@ -3,6 +3,9 @@ freeze(".", "main.py")
 freeze(".", "voltage.py")
 freeze(".", "voice.py")
 freeze(".", "poses.py")
+# KittenBlock 在线积木的短调用层：把 _ok / 全局同步 / 嘤声搬到板上，
+# 积木 pycode 压到 <=18 字符（1 个 20 字符分片，0 次回显等待）。
+freeze(".", "motion_kb.py")
 freeze(".", "pwm_ext.py")
 freeze(".", "camera_serial.py")
 freeze(".", "camera_stream.py")

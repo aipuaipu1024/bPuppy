@@ -135,6 +135,8 @@ There are some functional differences between **online debugging mode** and **do
 
    ![Left: voice-event blocks; right: keyboard blocks](https://raw.githubusercontent.com/bobyuhit/bPuppy/master/docs/PIC/14.en.png)
 
+> **Online debugging speed**: over Bluetooth, each block is sent as a separate command and every command waits for the board's echo; the longer the command (e.g. motion parameters / center offset), the more noticeable the delay. When debugging a key-driven program, put **speed** and **switch gait** first, and **motion parameters** / **center offset** after them — the dog starts moving first and the parameters ease in while it walks. If possible, use USB serial for online debugging instead: serial does not split commands into 20-character chunks and does not wait for per-chunk echoes (key detection still happens in the browser, so keyboard blocks keep working).
+
 ### 4.1 Pose Actions 🟠
 
 Make the robot dog hold a fixed pose, or perform a short action.

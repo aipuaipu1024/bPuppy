@@ -19,9 +19,11 @@
 
 // ---- echo 批量打包 ----
 // 逐字符发通知会瞬间吃光 NimBLE 小包池 (MSYS_1 仅 12 块), 饿死紧随的下一写入包 → 指令截断。
-// 攒到一整行 (遇 \n) 或超时再发一个通知 (MTU 256 可装 253 字节), 一条命令的 echo 从几十个通知变 1 个。
+// 攒到一整行 (遇 \n) / 攒满 KittenBlock 的一片 (20 字符) / 提示符 / 超时才发一个通知
+// (MTU 256 可装 253 字节)。攒满 20 就发是关键: 客户端逐片等回显, 不能每片干等 30ms。
 #define TX_FLUSH_MAX        480     // 缓冲上限 (接近 MTU 256 载荷, 留余量)
-#define TX_FLUSH_TIMEOUT_MS 30      // 无 \n 的输出 (如 ">>> " 提示符) 超时兜底
+#define TX_FLUSH_CHUNK      20      // KittenBlock 一片 = 20 字符: 攒满一片立即回显
+#define TX_FLUSH_TIMEOUT_MS 10      // 无 \n / 无提示符的输出兜底 (原 30)
 
 typedef struct {
     mp_obj_base_t base;
@@ -72,6 +74,11 @@ STATIC mp_uint_t ble_stream_read(mp_obj_t self_in, void *buf, mp_uint_t size, in
     return got;
 }
 
+// 缓冲末尾是否为某个固定串 (提示符兜底用)
+STATIC int ble_stream_tx_ends_with(const ble_stream_obj_t *self, const char *s, size_t n) {
+    return self->tx_len >= n && memcmp(&self->tx_buf[self->tx_len - n], s, n) == 0;
+}
+
 STATIC mp_uint_t ble_stream_write(mp_obj_t self_in, const void *buf, mp_uint_t size, int *errcode) {
     (void)errcode;
     ble_stream_obj_t *self = MP_OBJ_TO_PTR(self_in);
@@ -82,9 +89,15 @@ STATIC mp_uint_t ble_stream_write(mp_obj_t self_in, const void *buf, mp_uint_t s
         self->tx_buf[self->tx_len++] = p[i++];
     }
     self->tx_last_ms = esp_timer_get_time() / 1000;
-    // 攒够一整行 (\n 结束) 或缓冲满 → 立刻发
-    if (self->tx_len > 0 && (self->tx_buf[self->tx_len - 1] == '\n'
-                             || self->tx_len >= TX_FLUSH_MAX)) {
+    // 立刻发: 攒满 KittenBlock 的一整片 (20 字符) / 整行 (\n) / 缓冲满 /
+    //         提示符 (>>> 或续行 ...) —— 客户端按 20 字符逐片等回显,
+    //         攒到 20 就发才不会让每片都干等 10-30ms 超时。
+    if (self->tx_len > 0
+        && (self->tx_len >= TX_FLUSH_CHUNK
+            || self->tx_buf[self->tx_len - 1] == '\n'
+            || self->tx_len >= TX_FLUSH_MAX
+            || ble_stream_tx_ends_with(self, ">>> ", 4)
+            || ble_stream_tx_ends_with(self, "... ", 4))) {
         ble_stream_tx_flush(self);
     }
     return size;   // 全部接收 (异步稍后发出), dupterm 认为已写成功

@@ -824,9 +824,16 @@ KittenBlock 可通过**蓝牙**连接 bPuppy，把 BLE 当作与串口等价的 
 - 现象恰为「chunk1 + `\n` 到了，chunk2 丢了」→ 命令在 20 字节处截断。
 
 **修复（`ble_stream.c` echo 批量打包 = 核心）**：
-- 把逐字符通知改为**攒到一整行（遇 `\n`）或 30ms 超时再发一个 NOTIFY**（MTU 256 单包可装 253 字节）。
-- 一条命令的 echo 从几十个通知 → **1 个**；mbuf 分配从每字符 1 块 → 每行 1 块，洪峰消失，后续分包不再被饿死。
-- 超时兜底挂 `ble_stream_read`/`ioctl`（REPL 空闲时高频轮询），覆盖无换行输出（如 `>>> ` 提示符）。KittenBlock 是**命令级流控**（等 `>>>` 再发下一条，非 chunk 级），批量 echo 不影响时序。
+- 最初：把逐字符通知改为**攒到一整行（遇 `\n`）或 30ms 超时再发一个 NOTIFY**。
+  一条命令的 echo 从几十个通知 → 1 个，mbuf 洪峰消失，后续分包不再被饿死。
+- 2026-10-22：20 字符分片没有换行，原来的 30ms 超时会让**每一片都干等 30ms**。
+  改为**攒满 KittenBlock 的一整片（20 字符）立即 flush** + `>>> `/`... ` 提示符立即
+  flush + `TX_FLUSH_TIMEOUT_MS` 降到 10ms 兜底。echo 仍不逐字符发，但不再每片等 30ms。
+- ⚠ 客户端 `execLine` 对**每个非末片**都 `beginEchoWait`（3s 超时），末片才等 `>>>`。
+  以前写的"命令级流控（非 chunk 级）"只对末片成立。⇒ 长命令按片数累积往返；
+  **参数块 pycode 必须压到 ≤18 字符（1 片）**，长逻辑放 `frozen/motion_kb.py`
+  （`_m.p(...)` / `_m.s(...)` / `_m.c(...)` / `_m.g(...)` / `_m.go(...)`）。
+- 超时兜底挂在 `ble_stream_read`/`ioctl`（REPL 空闲时高频轮询）。
 
 **验证（实测通过）**：
 - 临时 `RXW len=...` 诊断日志（验证后已删）确认 `_speed = 2.5; _strid` 的 chunk1（20B）+ chunk2 `e = 70; _height = 70`（20B）+ 换行（2B）**全部到达 GATT 写回调**。
@@ -836,13 +843,26 @@ KittenBlock 可通过**蓝牙**连接 bPuppy，把 BLE 当作与串口等价的 
 
 | 文件 | 改动 |
 |------|------|
-| `drivers/ble_stream.c` | echo 批量打包（`tx_buf` + 遇 `\n`/超时 flush）— **核心修复** |
+| `drivers/ble_stream.c` | echo 批量打包（`tx_buf` + 遇 `\n` / 攒满 20 字符 / 提示符立即 flush，10ms 兜底）— **核心修复** |
 | `drivers/ble_driver.c` | 连接成功主动 `ble_gattc_exchange_mtu()`（MTU→256，单包不再跨包）；接收缓冲 512→4096；写满丢新字节而非覆盖未读数据 |
 | `drivers/ble_driver.h` | `ble_recv_command` 注释修正（最多取 max_len-1 字节） |
 
 **为什么换 MCU 前能跑、现在不能**：与 MCU 无关。git 历史里 `_speed = 2.5; _stride = 70; _height = 70` 这条 40 字节 afterConnect 是 2026-08 才加进 `extension.json`；此前命令都 ≤21 字节，**从不触发 20 字节分包边界**。20 字节分包隐患自 BLE 引入（NimBLE）起就存在，只是这次命令长度 + echo 并发时序共同触发了它。
 
 > ⚠ 2026-09-27 这条 afterConnect 又长了一点（加了 `_lift = 30`，40 → 52 字节）。修复是在 `ble_stream.c` 做了批量打包 + MTU 协商，跟命令长度无关，所以不影响；但**别再往这一行里堆东西** —— 每多一个变量，都是一次跨 20 字节边界的实测。
+
+### 11.7 在线积木的短调用规则（2026-10-22）
+
+网页版在线执行时，一条命令按 **20 字符**切片；**每个非末片都要等板子回显**（3s 超时）。
+所以命令长度直接决定按键延迟：
+
+- `pycode` 尽量 **≤18 字符**（+`\r\n` = 20 → 1 片、0 次回显等待）。
+- 收尾逻辑（`_ok` 回写、`_speed/_stride/_lift/_height` 同步、失败嘤嘤）放
+  `frozen/motion_kb.py`，积木只发短调用：
+  `_m.p(...)` / `_m.s(...)` / `_m.c(...)` / `_m.t(...)` / `_m.b(...)` /
+  `_m.g(...)` / `_m.go(...)` / `_m.x()` / `_m.get(i)`。
+- `afterConnect` / `libs.import` 各加一次 `import motion_kb as _m` + `_m.bind(globals())`。
+- **固件和扩展必须一起更新**：新扩展 + 旧固件会 `NameError: _m`；升级顺序是先烧固件、再换扩展。
 
 ---
 

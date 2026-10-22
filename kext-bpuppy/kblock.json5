@@ -1,6 +1,6 @@
 {
   libs:{
-    "*":{import:'import poses, bpuppy_motion, bpuppy_servo, bpuppy_imu, voice, time, balance, heading_anchor as anc\nfrom time import sleep\n\n_speed = 2.5\n_stride = 70\n_lift = 30\n_height = 70\n_dir = 1\n\n# _ok: 上一次设置类积木是否真的生效 (被拒时固件保持原值)\n#   设置块直接用固件返回的 True/False (set_params / set_speed / set_turn 的返回值\n#   已透传到 MicroPython), 不再靠 get_params() 读回比对 —— 没有取整容差误判。\n#   「设置成功？」积木就是读这个值。\n_ok = True\n\n# 原厂已 init_all + 站姿待命, 不再重复初始化 (init_all 非幂等, 重复会失能跳变)\n# IMU: **这里就先起起来** —— 它的姿态滤波要 ~4.5s 才收敛, 现在开始算, 等用户点\n#   「航向锁定 偏转」或「偏航角」时早就稳了 (I2C 读数, 不跟 WiFi/蓝牙抢射频)。\n#   幂等: 用户再点「初始化 IMU」也只是一次空调用。\nbpuppy_imu.init(0, 14, 21, 0x68)\n# 语音: voice 上电已自启动 (UART2/9600 + 后台线程), 事件积木函数 voiceWhen* 自动注册\nvoice.set_main_globals(globals())   # 事件函数扫描用主全局 (sys.modules[__main__] 为 None)'},
+    "*":{import:'import poses, bpuppy_motion, bpuppy_servo, bpuppy_imu, voice, time, balance, heading_anchor as anc\nimport motion_kb as _m\n_m.bind(globals())\nfrom time import sleep\n\n_speed = 2.5\n_stride = 70\n_lift = 30\n_height = 70\n_dir = 1\n\n# _ok: 上一次设置类积木是否真的生效 (被拒时固件保持原值)\n#   设置块直接用固件返回的 True/False (set_params / set_speed / set_turn 的返回值\n#   已透传到 MicroPython), 不再靠 get_params() 读回比对 —— 没有取整容差误判。\n#   「设置成功？」积木就是读这个值。\n_ok = True\n\n# 原厂已 init_all + 站姿待命, 不再重复初始化 (init_all 非幂等, 重复会失能跳变)\n# IMU: **这里就先起起来** —— 它的姿态滤波要 ~4.5s 才收敛, 现在开始算, 等用户点\n#   「航向锁定 偏转」或「偏航角」时早就稳了 (I2C 读数, 不跟 WiFi/蓝牙抢射频)。\n#   幂等: 用户再点「初始化 IMU」也只是一次空调用。\nbpuppy_imu.init(0, 14, 21, 0x68)\n# 语音: voice 上电已自启动 (UART2/9600 + 后台线程), 事件积木函数 voiceWhen* 自动注册\nvoice.set_main_globals(globals())   # 事件函数扫描用主全局 (sys.modules[__main__] 为 None)'},
   },
   blocks: [
     "## $$cat_pose",
@@ -52,41 +52,41 @@
       opcode: 'stop',
       blockType: 'command',
       text: '$$stop',
-      pycode: "bpuppy_motion.set_gait('stop')"
+      pycode: "_m.x()"
     },
-    // ⚠ 四个方向块都推一句 set_speed(_speed) —— 看着冗余, 但**别删**:
-    //   这一句让网页遥控器/文本块把速度设成 7 之后, 按「前进」能回到 _speed (初值 2.5,
-    //   「设置速度」块会同步更新它 ⇒ 对纯积木用户两种写法等价)。
+    // 四个方向块统一走 _m.go(direction, turn)。它在板子上做:
+    //   set_direction + set_turn + set_speed(_speed)
+    //   + set_params(_stride, _lift, _height) + set_gait('go')
+    // 其中 set_speed(_speed) 让网页遥控器/文本块把速度设成 7 之后,
+    // 按「前进」能回到 _speed (初值 2.5; 「设置速度」块会同步更新它)。
     // ★★ 方向是**独立参数** set_direction(±1), 不寄居在步长的符号里。
-    //   所以「后退」块写 set_direction(-1) + set_params(_stride, ...) ——
-    //   **步长的幅度一点不变**, 只有方向翻; 写成 set_params(-abs(_stride), ...) 会被固件
-    //   拒绝 (步长只表幅度) 并嘤嘤叫。四个块都显式说方向, 没有"按当前步长符号猜"的隐含行为。
-    // ★★ 注意: 这四个块最后都推 set_gait('go'), 而 go 会**接管** stride/lift/height
-    //   ⇒ 这几句 set_params 在 go 下数值被固件忽略 (只被保存)。真正决定速度的是上面那句
-    //   set_speed(_speed); 想让 _stride/_lift/_height 生效, 得用 walk/trot。
+    //   「后退」也是 +1 的幅度、只翻方向; 写成负步长会被固件拒绝 (步长只表幅度)。
+    // ★★ go 会**接管** stride/lift/height ⇒ set_params 的数值只被保存,
+    //   真正决定速度的是 set_speed(_speed); 想让 _stride/_lift/_height 生效,
+    //   得用 walk/trot。
     {
       opcode: 'forward',
       blockType: 'command',
       text: '$$forward',
-      pycode: "bpuppy_motion.set_direction(1); bpuppy_motion.set_turn(0); bpuppy_motion.set_speed(_speed); bpuppy_motion.set_params(_stride, _lift, _height); bpuppy_motion.set_gait('go')"
+      pycode: "_m.go(1,0)"
     },
     {
       opcode: 'backward',
       blockType: 'command',
       text: '$$backward',
-      pycode: "bpuppy_motion.set_direction(-1); bpuppy_motion.set_turn(0); bpuppy_motion.set_speed(_speed); bpuppy_motion.set_params(_stride, _lift, _height); bpuppy_motion.set_gait('go')"
+      pycode: "_m.go(-1,0)"
     },
     {
       opcode: 'turnLeft',
       blockType: 'command',
       text: '$$turnLeft',
-      pycode: "bpuppy_motion.set_direction(1); bpuppy_motion.set_turn(-0.8); bpuppy_motion.set_speed(_speed); bpuppy_motion.set_params(_stride, _lift, _height); bpuppy_motion.set_gait('go')"
+      pycode: "_m.go(1,-0.8)"
     },
     {
       opcode: 'turnRight',
       blockType: 'command',
       text: '$$turnRight',
-      pycode: "bpuppy_motion.set_direction(1); bpuppy_motion.set_turn(0.8); bpuppy_motion.set_speed(_speed); bpuppy_motion.set_params(_stride, _lift, _height); bpuppy_motion.set_gait('go')"
+      pycode: "_m.go(1,0.8)"
     },
     "---",
     "## $$cat_voice",
@@ -256,39 +256,38 @@
       //    全由速度自己算 —— speed≤4: 步长70/站高70/抬脚30; speed≥6: 步长50/站高70/抬脚5;
       //    中间线性插值 (见 AGENTS.md「GO 自适应」表)。方向**不受 go 影响** (独立参数)。
       //    四个方向块用的都是 go ⇒ 本块设的值对「前进/后退/左转/右转」**没有影响**,
-      //    要让它生效得先用「切换步态」选 walk 或 trot。下面那句回写仍然必须留着:
+      //    要让它生效得先用「切换步态」选 walk 或 trot。helper 里的回写仍然必须留着:
       //    walk/trot 下它就是真的在起作用。
-      // ⚠★ 本块 pycode 是**单行**: 顶格、无内部换行、一条复合语句都不许有 —— 不能写 `if`。**铁律。**
-      //   (`if` 段在友善 REPL 上闭不了合、整段不执行 —— 见 AGENTS.md 易错点 13;
-      //    内部换行则会被网页版的"分片等回显"中途掐死 —— 见 setSpeed 的详注。)
-      //   条件回写用条件表达式 (`a if c else b`); 失败嘤嘤用 `or` 短路, 见下面那行。
-      // ★ abs() 从此**只用于回写全局**: set_params 收原值 ⇒ 负步长才会走到固件那条
-      //   `!(stride >= 0)` (motion_task.cpp:1350) 被拒 + 嘤嘤叫, 兑现
-      //   docs/micropython编程指南.md「1.2 运动指令 bpuppy_motion」的参数表
-      //   与 扩展开发.md「固件对负 stride 直接拒」的承诺 (以前 abs 在前, 那条闸门永远够不到)。
-      //   被拒时三个全局**不写**, 与固件"整组被拒一个都不写" (motion_task.cpp:1364-1368) 一致。
-      pycode: '_ok = bpuppy_motion.set_params([STRIDE], [LIFT], [HEIGHT]); _stride = abs([STRIDE]) if _ok else _stride; _lift = [LIFT] if _ok else _lift; _height = [HEIGHT] if _ok else _height; _ok = _ok or voice.say(*voice.SND_YING) or False'
+      // ⚠★ 本块只发一次短调用 `_m.p(...)`（1 片、0 次回显等待）。
+      //   原长 pycode 的收尾逻辑全部搬到 frozen/motion_kb.py:
+      //   - 写回 _ok 供「设置成功?」读;
+      //   - 成功才把 _stride=abs(stride)/_lift/_height 写回主全局
+      //     (被拒时三个全局不写, 与固件"整组被拒一个都不写"一致);
+      //   - 失败时 voice.say(*SND_YING) 嘤一声。
+      //   set_params 仍收原值 ⇒ 负步长会被固件那条 `!(stride >= 0)` 拒 + 嘤声
+      //   (abs 只用于回写全局)。
+      pycode: '_m.p([STRIDE],[LIFT],[HEIGHT])'
     },
     {
       opcode: 'getStride',
       blockType: 'reporter',
       text: '$$getStride',
       disableMonitor: false,
-      pycode: 'bpuppy_motion.get_params()[1]'
+      pycode: '_m.get(1)'
     },
     {
       opcode: 'getHeight',
       blockType: 'reporter',
       text: '$$getHeight',
       disableMonitor: false,
-      pycode: 'bpuppy_motion.get_params()[2]'
+      pycode: '_m.get(2)'
     },
     {
       opcode: 'getLift',
       blockType: 'reporter',
       text: '$$getLift',
       disableMonitor: false,
-      pycode: 'bpuppy_motion.get_params()[3]'
+      pycode: '_m.get(3)'
     },
     // 「速度 [SPEED] 方向 [DIR]」: [DIR] 是 value 型菜单 (值裸代入) ⇒ 1=前进 / -1=后退。
     //   速度和方向**各走各的函数** (set_speed / set_direction), 改一个不碰另一个;
@@ -327,7 +326,9 @@
       //   ⇒ **pycode 一律单行** (`;` 连接): 中间分片没有换行 → 不执行 → 回显原样 →
       //   任意长度都安全 (afterConnect 的 58 字符单行一直好使就是证据; 「蹲下」单行同理)。
       //   ⚠ 仍然不许 if/def 等复合语句 (会卡 REPL 续行, 见 AGENTS.md 易错点 13)。
-      pycode: '_speed = [SPEED]; _dir = [DIR]; bpuppy_motion.set_direction(_dir); bpuppy_motion.set_speed(_speed); _ok = True'
+      //   ⚠ 单行只保证"不错", 不保证"快": 每个非末片都要等回显 (3s 超时), 命令越长
+      //   片越多。本块已压成 _m.s(...) → 1 片、0 次回显等待 (收尾逻辑在 motion_kb.py)。
+      pycode: '_m.s([SPEED],[DIR])'
     },
     // ---- 读数积木 (读**板上生效值**) ----
     // ⚠ `disableMonitor: false` 是**必须写的**: KittenBlock 把舞台 monitor 的勾选框放宽到了任意
@@ -342,7 +343,7 @@
       blockType: 'reporter',
       text: '$$getSpeed',
       disableMonitor: false,
-      pycode: 'bpuppy_motion.get_params()[0]'
+      pycode: '_m.get(0)'
     },
     // ★ 方向读数 ([7]) —— 与「步长」分开。「步长」返回的是**带符号**的幅度×方向,
     //   想看"到底朝哪边走"看这个; 想看"迈多大步"看「步长」再取绝对值。两个都留着。
@@ -351,7 +352,7 @@
       blockType: 'reporter',
       text: '$$getDir',
       disableMonitor: false,
-      pycode: 'bpuppy_motion.get_params()[7]'
+      pycode: '_m.get(7)'
     },
     {
       opcode: 'setGait',
@@ -364,10 +365,10 @@
           defaultValue: 'go'
         }
       },
-      pycode: "bpuppy_motion.set_turn(0); bpuppy_motion.set_gait([GAIT])"
+      pycode: "_m.g([GAIT])"
     },
-    // ⚠ set_turn 超范围时**静默钳到 ±1** (行为未变), 但现在会返回 False ⇒ 直接就是 _ok,
-    //   不必再读回比对。注意 False 的含义是"没原样采纳", 值本身已经写进去了 (±1)。
+    // ⚠ set_turn 超范围时**静默钳到 ±1** (行为未变), 但返回 False ⇒ helper 写 _ok=False
+    //   并嘤一声。注意 False 的含义是"没原样采纳", 值本身已经写进去了 (±1)。
     {
       opcode: 'setTurn',
       blockType: 'command',
@@ -378,15 +379,15 @@
           defaultValue: '0'
         }
       },
-      // ⚠ 顶格单句 + 单行, 不许有复合语句 (见 setSpeed 详注)。注意 False 只是"没原样采纳", 值已钳位写入。
-      pycode: '_ok = bpuppy_motion.set_turn([TURN]); _ok = _ok or voice.say(*voice.SND_YING) or False'
+      // ⚠ 短调用; _ok / 嘤声在 motion_kb.t() 里。False 只是"没原样采纳", 值已钳位写入。
+      pycode: '_m.t([TURN])'
     },
     {
       opcode: 'getTurn',
       blockType: 'reporter',
       text: '$$getTurn',
       disableMonitor: false,
-      pycode: 'bpuppy_motion.get_params()[5]'
+      pycode: '_m.get(5)'
     },
     // C 签名是 (俯仰, 滚转) —— 跟块上文字「俯仰 [PITCH]…滚转 [ROLL]」同序,
     // 所以 pycode 按 [PITCH], [ROLL] 顺着写即可, 不会串。
@@ -407,10 +408,8 @@
         PITCH: { type: 'number', defaultValue: '0' },
         ROLL:  { type: 'number', defaultValue: '0' }
       },
-      // ⚠ 顶格单句 + 单行, 不许有复合语句 (见 setSpeed 详注)。
-      //   最后一段靠 `or` 短路: _ok 假才求值 voice.say ⇒ 嘤; 尾部 or False 把 say 返回的
-      //   None 收回真 bool ⇒「设置成功？」读数不变。见 AGENTS.md 易错点 13。
-      pycode: '_ok = bpuppy_motion.set_body_pose([PITCH], [ROLL]); _ok = _ok or voice.say(*voice.SND_YING) or False'
+      // ⚠ 短调用; _ok / 嘤声在 motion_kb.b() 里。
+      pycode: '_m.b([PITCH],[ROLL])'
     },
     // 「设置成功？」: 上一次设置类积木(运动参数/速度/转弯率)是否**真的生效**。
     // 原理: 直接读固件返回的 True/False (set_params / set_speed / set_turn 的返回值
@@ -430,7 +429,7 @@
       opcode: 'initImu',
       blockType: 'command',
       text: '$$initImu',
-      pycode: 'bpuppy_imu.init(0, 14, 21, 0x68)'
+      pycode: '_m.imu()'
     },
     {
       opcode: 'getRoll',
@@ -511,8 +510,8 @@
       arguments: {
         OFFSET: { type: 'number', defaultValue: '0' }
       },
-      // ⚠ 顶格单句 + 单行, 不许有复合语句 (见 setSpeed 详注)。
-      pycode: '_ok = bpuppy_motion.set_center([OFFSET]); _ok = _ok or voice.say(*voice.SND_YING) or False'
+      // ⚠ 短调用; _ok / 嘤声在 motion_kb.c() 里。注意它仍然会写 NVS。
+      pycode: '_m.c([OFFSET])'
     }
   ],
   menus: {
