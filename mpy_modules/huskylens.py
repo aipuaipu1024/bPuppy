@@ -99,11 +99,20 @@ _last_e = None         # last error fed to the loop (deg)
 _spd_set = None        # last speed written via set_speed (skip no-op writes:
                        # every call logs "Speed: ... (omega=...)" to UART0)
 _lost_n  = 0           # consecutive target-less ticks (see LOST_STOP_N)
+_stop_sent = False     # a set_gait('stop') was sent and not yet cancelled
 
 LOST_STOP_N = 3        # stop only after this many consecutive ticks without a
                        # target: a single dropped frame (shaky camera while
-                       # walking) must not abort the gait -- speed 0 starts the
-                       # GO fade-out and each toggle causes walk/stall jerking
+                       # walking) must not abort the gait
+
+# ⚠ Parking is done with set_gait('stop') (the repos path), NEVER set_speed(0):
+# in the firmware a speed that reaches 0 while GO runs freezes the phase, and
+# the stride fade-out is driven BY the phase -- it never finishes, the
+# "speed lock" then blocks any recovery, and the robot freezes in place
+# (motion_task.cpp fade-out + speed-follower at low speed). The repos stop
+# does not use the fade and cannot dead-lock. 'stop' also keeps walking until
+# the next all-legs-stance window; if a target reappears first, set_gait('go')
+# simply cancels the pending stop -- no visible pause at all.
 # d[m] * w[px] (D = K / w). Preloaded with the 2026-10-15 three-point fit
 # (7/20/50 cm -> w 139/41/15) for THIS target; a different object needs its
 # own dist_cal(known_distance_m).
@@ -273,37 +282,41 @@ def err():
     """Loop input: current error (deg). None = no data this tick (walk straight).
     The returned error is scaled by the distance gain (turn = kp * err).
     Internal -- called by heading_follow every tick."""
-    global _last_x, _last_w, _last_e, _spd_set, _lost_n
+    global _last_x, _last_w, _last_e, _spd_set, _lost_n, _stop_sent
     if not _on:
         return None
     r = _block_xw(_read_reply())
     if r is None:
         # No target (or no reply). heading_follow sees None and lets the turn
-        # decay to 0; the speed goes to 0 -- but only after LOST_STOP_N ticks,
-        # so one hiccup frame does not break the walk.
+        # decay to 0. After LOST_STOP_N ticks park via 'stop' (repos) -- see
+        # the long note at _stop_sent: never set_speed(0) while GO runs.
         _last_x = None
         _last_w = None
         _last_e = None
         _lost_n += 1
-        if _lost_n >= LOST_STOP_N and _spd_set != 0.0:
-            _spd_set = 0.0
-            m.set_speed(0.0)
+        if _lost_n >= LOST_STOP_N and not _stop_sent:
+            _stop_sent = True
+            m.set_gait('stop')
         return None
     _lost_n = 0
     _last_x, _last_w = r
-    # Revive after a stop: speed 0 fades the stride out into GAIT_STOP, and a
-    # plain set_speed() cannot pull it back (motion_task.cpp: the speed
-    # follower only runs in a non-static gait). So while a target is visible,
-    # re-arm 'go' whenever the gait is not a moving one (0=stop, 4=repos).
-    # Once it walks again this fires no more. To pause deliberately, off().
-    if m.get_params()[6] not in (1, 2, 3):
-        m.set_gait('go')
     d = _dist_of(_last_w)
-    if d is not None:
-        sv = _speed_for(d)
+    sv = _speed_for(d) if d is not None else None
+    if sv is None:
+        pass                       # no distance info: leave gait & speed alone
+    elif sv > 0.0:
+        # walking wanted: cancel a pending stop / re-arm go if we parked
+        if _stop_sent or m.get_params()[6] not in (1, 2, 3):
+            _stop_sent = False
+            m.set_gait('go')
         if _spd_set is None or abs(sv - _spd_set) >= SPD_WRITE_STEP:
             _spd_set = sv
             m.set_speed(sv)
+    else:
+        # too close to walk (or scheduled 0): park, same repos path
+        if not _stop_sent:
+            _stop_sent = True
+            m.set_gait('stop')
     _last_e = ERR_SIGN * (_last_x - X_CENTER) / 160.0 * HALF_FOV_DEG
     return _last_e * _gain_scale()
 
@@ -317,11 +330,12 @@ def on(baud=9600):
     !! The robot WILL move -- clear the floor first.
     !! Keep heading_anchor's loop off while this runs (both write turn).
     """
-    global _on, _spd_set, _lost_n
+    global _on, _spd_set, _lost_n, _stop_sent
     _init(baud)
     _on = True
     _spd_set = None                # first tick always writes the scheduled speed
     _lost_n = 0
+    _stop_sent = False
     try:
         if m.get_params()[6] not in (1, 2, 3):   # 0=stop 4=repos -> start walking
             m.set_gait('go')
@@ -412,14 +426,17 @@ def set(**kw):
 
 
 def watch(period_ms=300, ticks=None):
-    """Roll-print d / err / speed / turn while the loop runs.
+    """Roll-print d / err / speed / turn / eff while the loop runs.
 
     d      distance in m (K/w)     err   target angle, deg
-    spd    scheduled speed         turn  turn sent by the loop
+    spd    scheduled speed (target)      turn  turn sent by the loop
+    eff    stride the legs ACTUALLY use right now (0 = standing still,
+           whatever spd says -- the give-away when "speed is set but the
+           robot does not walk")
     Ctrl-C stops **watching only** -- the loop keeps running (off() to stop).
     ticks=N prints N lines and returns (handy for a quick look).
     """
-    print("[hl] watch:  d(m)   err(deg)  spd   turn")
+    print("[hl] watch:  d(m)   err(deg)  spd   turn    eff")
     n = 0
     try:
         while ticks is None or n < ticks:
@@ -427,10 +444,10 @@ def watch(period_ms=300, ticks=None):
             p = m.get_params()
             d = dist()
             e = read()[2]
-            print("[hl] d=%s err=%s spd=%.1f turn=%+.1f"
+            print("[hl] d=%s err=%s spd=%.1f turn=%+.1f eff=%.0f"
                   % (('%.2f' % d) if d is not None else '--',
                      ('%+.1f' % e) if e is not None else '--',
-                     p[0], p[5]))
+                     p[0], p[5], m.get_effective()[0]))
             time.sleep_ms(period_ms)
     except KeyboardInterrupt:
         print("[hl] watch stopped (loop still running -- off() to stop it)")
