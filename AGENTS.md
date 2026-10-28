@@ -845,6 +845,25 @@ python tools/capture.py COM3   # 端口换成实际值 (设备管理器查看)
 
 ## 开发注意事项 — 易错点总结
 
+### 0. 不要另建 I2C 对象扫总线 —— 会硬复位整机
+
+固件的 IMU 驱动（`bpuppy_imu`）**已经占用 I2C0**（SDA=GPIO14 / SCL=GPIO21）。
+在应用层再 `I2C(0, scl=Pin(21), sda=Pin(14))` 去 `scan()`（哪怕随后 `deinit()`），
+**会把板子硬复位**：实测 `machine.reset_cause() == 2`（HARD_RESET），
+运行几十秒后突然重启，热点和图传全断。
+
+想确认 IMU 在不在，只能问驱动本身：
+
+```python
+import bpuppy_imu as imu
+imu.init(0, 14, 21, 0x68)      # 地址写死 0x68；模块 AD0 拉高时实际在 0x69
+print(imu.is_ready(), imu.get_chip())
+```
+
+排查「未检测到 IMU」时的正确顺序：先 `is_ready()`/`get_chip()`，再查接线与 AD0 电平，
+**不要**自己去扫总线。
+
+
 ### 1. 膝角约定
 
 **IK `knee_angle`**: 0°=折叠, 180°=伸直。
