@@ -1247,6 +1247,32 @@ idf.py flash monitor       # 烧录并监控
 ### IMU 校准后有固定偏差 —— ✅ 已修复
 `calibrate(300)` 原先只补偿 Z 轴（1g），X/Y 零偏未标定 → 水平放置姿态角偏 ~12°。现已补 X/Y 零偏（**校准时机身必须水平**）。修复后水平放置读数应 ≈0。
 
+### 网页遥控页「设置」菜单点了没反应（时好时坏）—— ✅ 已修复
+
+三个**互相独立**的原因，全部在 `/camera_on.py`（上电开关文件）侧，**不需要重烧固件**：
+
+1. **补丁改错了对象** —— HTTP 响应用 `camera_stream._html_page()` 生成，
+   只改 `camera_stream._HTML_TEMPLATE` 不进真实响应。改为包装 `_html_page()`。
+2. **注入的 JS 有语法错误** —— 单引号字符串里嵌套未转义单引号
+   （`getElementById('v' + i + '')`），整个 script 块报废，`openModal()` 从未定义。
+   改为 `data-*` 属性 + 捕获阶段事件委托，部署前用 `node --check` 验语法。
+3. **（核心）菜单按钮在文档顶部、绑定脚本在文档底部 + 服务端单线程阻塞 2 秒** ——
+   `_accept_loop()` 里 `client.settimeout(2.0)` + 单次 `recv(512)`，手机浏览器的
+   预连接/取消请求会把整个服务器阻塞满 2 秒（实测 144ms → 2119ms），页面慢慢吐出，
+   用户点到还没有处理函数的按钮。改为：UI 注入移到 `<body>` 之后、**菜单按钮也用
+   事件委托**（与底部脚本解耦）、动作在点击时解析、轮询降频。
+
+另有：固件响应无缓存头（手机一直显示旧页）、`exec(代码, globals())` 共享命名空间
+导致一处 `s = ...` 就覆盖舵机模块（`ERR:'socket' object has no attribute
+'get_cal_point'`，已改闭包 + 函数内 import）、IMU 懒初始化导致 `calibrate()` 静默失败、
+`heading_follow.running` 是函数被当布尔用、`fetch` 在 502 时不 reject 等。
+
+📖 完整分析 / 部署 / 本地调试 / 串口诊断见 `docs/web调试界面修复说明.md`；
+增强版开关文件在 `mpy_modules/camera_on.py`，本地无机器调试工具 `tools/web_ui_mock.py`。
+服务端根因也已修：`camera_on.py` 在 `start()` 前替换固件的 `_accept_loop`
+（2s→0.5s 超时 + 读到请求头完整为止，半开连接阻塞从 2119ms 降到 406ms，
+并支持长 URL 与分包请求），**已硬件回归**；建议固件侧 `frozen/camera_stream.py` 同步修改。
+
 ### 自平衡起始方向依赖 —— 已修偏置, 待验证
 `balance.start()` 时，若机身起始方向与启动瞬间不一致，会稳定在肉眼不平的角度。根因是加速度计 X/Y 偏置（上述），偏置修复后应缓解，**待实测验证**。
 
