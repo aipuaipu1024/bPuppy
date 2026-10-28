@@ -247,3 +247,9 @@ while b"\r\n\r\n" not in raw and len(raw) < 1024:
 - **舵机零偏**存放在 NVS，断电不丢失；每次调整立即写 Flash。
 - 没有 IMU 的板子，IMU 校准会明确提示「未检测到 IMU，请检查接线」，
   不会假装成功。
+
+> ⚠️ **不要在应用层另建 I2C 对象扫总线找 IMU** —— 固件已占用 I2C0，再
+> `I2C(0, scl=Pin(21), sda=Pin(14))` + `scan()` 会把板子**硬复位**
+> （实测 `reset_cause()==2`，运行几十秒后突然重启，热点/图传全断）。
+> 查 IMU 只能问驱动：`bpuppy_imu.init(0,14,21,0x68)` → `is_ready()` / `get_chip()`。
+> 详见 AGENTS.md 易错点 0。
